@@ -1,0 +1,22 @@
+{
+    "name": "MiHordeTraffic.Editor",
+    "rootNamespace": "MiHordeTraffic.EditorTools",
+    "references": [
+        "MiHordeTraffic",
+        "Unity.Burst",
+        "Unity.Collections",
+        "Unity.Mathematics",
+        "Unity.AI.Navigation"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
