@@ -16,8 +16,11 @@ At 5000 bodies, measured on the same crowd, switching technique at runtime:
 
 Editor numbers with collections checks on, and the baseline was running with a saturated repath budget, which
 if anything flatters it.
+<center>
+Youtube video showing the project and difference with Unity's way.
 
 [![Watch the showcase of this project](https://img.youtube.com/vi/vscjLy909bU/maxresdefault.jpg)](https://www.youtube.com/watch?v=vscjLy909bU)
+<i>https://www.youtube.com/watch?v=vscjLy909bU</i></center>
 
 ---
 
