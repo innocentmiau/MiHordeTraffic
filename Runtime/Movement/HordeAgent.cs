@@ -34,6 +34,12 @@ namespace MiHordeTraffic.Movement
         /*
          * Every agent that exists, enabled or not, so the technique switch can reach all of them. The mover's own
          * roster only holds the ones currently under the field, which is the wrong set to ask when switching back.
+         *
+         * Each agent remembers where it sits and leaves by swapping the last one into its place, rather than by
+         * List.Remove. Remove is a linear scan, and on a UnityEngine.Object it is a linear scan whose comparison
+         * calls out to native, so tearing down a crowd of five thousand was five thousand scans of an average of
+         * two and a half thousand entries: about twelve million of those comparisons, all of it in the frame the
+         * scene unloads or a wave despawns. This is the same swap back the mover and separation already use.
          */
         private static readonly List<HordeAgent> ALL = new List<HordeAgent>();
 
@@ -69,6 +75,7 @@ namespace MiHordeTraffic.Movement
         [SerializeField] private bool drawRoute = true;
         [SerializeField, Min(1)] private int routeSteps = 400;
 
+        private int _allIndex = -1;
         private int _separationIndex = -1;
         private bool _separationEnabled = true;
         private bool _settled;
@@ -371,10 +378,26 @@ namespace MiHordeTraffic.Movement
         {
             agent = agent ? agent : GetComponent<NavMeshAgent>();
 
+            _allIndex = ALL.Count;
             ALL.Add(this);
         }
 
-        private void OnDestroy() => ALL.Remove(this);
+        private void OnDestroy()
+        {
+            /*
+             * Guarded because the statics are cleared on a domain reload while the agents that were in them are
+             * still alive, so an agent destroyed after that reset holds an index into a list that no longer has it.
+             */
+            if (_allIndex < 0 || _allIndex >= ALL.Count || ALL[_allIndex] != this) return;
+
+            int last = ALL.Count - 1;
+
+            ALL[_allIndex] = ALL[last];
+            ALL[_allIndex]._allIndex = _allIndex;
+            ALL.RemoveAt(last);
+
+            _allIndex = -1;
+        }
 
         private void OnEnable()
         {
@@ -407,12 +430,17 @@ namespace MiHordeTraffic.Movement
          */
         private void ApplyMode_Internal()
         {
-            if (!isActiveAndEnabled) return;
-
             bool flow = _mode == HordeMovementMode.FLOW_FIELD;
 
             if (flow)
             {
+                /*
+                 * A disabled component is not taking part, so the field half is skipped for it entirely. Switching
+                 * off a NavMeshAgent that belongs to a body this component is not driving would leave that body
+                 * with nothing moving it, which is the exact trap the other branch has to undo.
+                 */
+                if (!isActiveAndEnabled) return;
+
                 if (agent) agent.enabled = false;
 
                 HordeFlowMovement.Register(this);
@@ -421,7 +449,20 @@ namespace MiHordeTraffic.Movement
 
             HordeFlowMovement.Unregister(this);
 
-            EnsureAgent();
+            /*
+             * The restore below runs whether or not this component is enabled, unlike the field half above, and
+             * that asymmetry is the point. Disabling a HordeAgent is how a body is taken off the field one at a
+             * time, and it is what the benchmark does to the whole crowd when it measures built in avoidance.
+             * The body's NavMeshAgent was switched off by flow mode, and the only thing that ever switches it back
+             * on is this method, so bailing on the disabled component left the agent off for good and the body
+             * standing still with neither system driving it. Switching the crowd back to NavMeshAgent movement
+             * then changed nothing, because every one of those bodies took the same early return again.
+             *
+             * Adding a missing agent is still skipped for a disabled component. Putting one back is repairing
+             * something this component broke; creating one is joining in, and a body that has been taken off the
+             * field is not asking to be.
+             */
+            if (isActiveAndEnabled) EnsureAgent();
 
             if (!agent) return;
 

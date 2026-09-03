@@ -42,6 +42,18 @@ namespace MiHordeTraffic.Movement
 
         private static readonly ProfilerMarker GATHER_MARKER = new ProfilerMarker("MiHordeTraffic.Movement.Gather");
         private static readonly ProfilerMarker MOVE_MARKER = new ProfilerMarker("MiHordeTraffic.Movement.Move");
+        /*
+         * Its own marker because everything under it blocks the main thread, unlike the last substep, which is the
+         * only part of the mover that overlaps with the rest of the frame. Folded into Move it would have read as
+         * the crowd waiting on a worker when it is really the crowd being solved several times over on the spot.
+         */
+        private static readonly ProfilerMarker SCHEDULE_MARKER = new ProfilerMarker("MiHordeTraffic.Movement.Schedule");
+        /*
+         * Separate from Move because Move is a wait on a worker and this is a sweep of the roster, and folding a
+         * loop over every body into the row that reports how long the main thread sat idle is how a real cost
+         * hides. It was outside every marker until now, which made the phases table read lower than the truth.
+         */
+        private static readonly ProfilerMarker PUBLISH_MARKER = new ProfilerMarker("MiHordeTraffic.Movement.Publish");
 
         private static readonly List<HordeAgent> PENDING_REGISTER = new List<HordeAgent>();
         private static readonly List<HordeAgent> PENDING_UNREGISTER = new List<HordeAgent>();
@@ -131,6 +143,10 @@ namespace MiHordeTraffic.Movement
         [SerializeField, Range(.01f, 1.5f)] private float jamFill = .95f;
         [Tooltip("Owned by Crowd Pressure. Slowest a body may be driven, as a fraction of its own speed.")]
         [SerializeField, Range(.01f, 1f)] private float minimumSpeedFraction = .25f;
+        [Tooltip("How hard a body still walks after separation says it has settled, as a fraction of its speed. One is the old behaviour: settled bodies keep pressing at full pace and the crowd at a destination never stops shoving itself.")]
+        [SerializeField, Range(0f, 1f)] private float settledDriveScale = .25f;
+        [Tooltip("Seconds a body keeps trying to walk into something before it accepts it is stuck and stops pressing. Zero switches it off, and a jam that is not at the goal will then never calm down.")]
+        [SerializeField, Min(0f)] private float stallSettleDelay = .5f;
         [Header("Congestion")]
         [SerializeField] private bool congestionEnabled = false;
         /*
@@ -177,6 +193,9 @@ namespace MiHordeTraffic.Movement
         private NativeArray<float> _progress;
         private NativeArray<byte> _arrived;
         private NativeArray<byte> _frozen;
+        private NativeArray<byte> _settled;
+        private NativeArray<byte> _stalled;
+        private NativeArray<float> _stallTime;
         private NativeArray<float3> _lastPosition;
         private NativeArray<float> _speedSum;
         private NativeArray<float> _referenceSum;
@@ -453,6 +472,9 @@ namespace MiHordeTraffic.Movement
             if (_reference.IsCreated) _reference.Dispose();
             if (_arrived.IsCreated) _arrived.Dispose();
             if (_frozen.IsCreated) _frozen.Dispose();
+            if (_settled.IsCreated) _settled.Dispose();
+            if (_stalled.IsCreated) _stalled.Dispose();
+            if (_stallTime.IsCreated) _stallTime.Dispose();
             if (_previousPositions.IsCreated) _previousPositions.Dispose();
             if (_heading.IsCreated) _heading.Dispose();
             if (_currentSpeed.IsCreated) _currentSpeed.Dispose();
@@ -488,6 +510,21 @@ namespace MiHordeTraffic.Movement
             float radiusSum = 0f;
             float fastest = 0f;
 
+            /*
+             * Handed to separation below, because until now nothing did. Separation settles a crowd ring by ring:
+             * the bodies that arrived stop first, the ones behind them notice that the neighbours between them and
+             * the goal have stopped, and the stop spreads outwards. All of that is measured against the body's own
+             * goal, and in this mode the only component that ever set one was the optional HordeEntity. A body
+             * running on HordeAgent alone reported no goal at all, so every ring past the first took the no goal
+             * exit and never settled, and a destination collected a pile of bodies pressing inwards forever.
+             *
+             * The driver's target rather than anything per body, because that is what the field is built towards
+             * and therefore what every body on it is genuinely walking at.
+             */
+            Transform destination = driver.Target;
+            bool hasDestination = destination;
+            float3 goal = hasDestination ? (float3)destination.position : float3.zero;
+
             using (GATHER_MARKER.Auto())
             {
                 for (int i = 0; i < _bodies.Count; i++)
@@ -502,6 +539,10 @@ namespace MiHordeTraffic.Movement
                     _push[i] = body.LastPush;
                     _speed[i] = body.Speed;
                     _frozen[i] = (byte)(body.IsFrozen ? 1 : 0);
+                    _settled[i] = (byte)(body.IsSeparationSettled ? 1 : 0);
+
+                    if (hasDestination) body.SetSeparationGoal(goal);
+                    else body.ClearSeparationGoal();
 
                     /*
                      * Frozen bodies are left out of the fastest reading. They are not going anywhere, so letting
@@ -517,34 +558,75 @@ namespace MiHordeTraffic.Movement
                 }
             }
 
-            /*
-             * Completed here rather than chained into the move job, because the field rebuild reads the same Cost
-             * array from a different component's LateUpdate and the order between two LateUpdates is undefined.
-             * The job walks a couple of thousand positions and a few thousand cells, so joining it immediately
-             * costs microseconds and removes a race that would otherwise depend on script execution order.
-             */
             _cellCapacity = CapacityFor(radiusSum / _bodies.Count, field.Grid.CellSize);
 
-            ScheduleOccupancy(field, step).Complete();
+            using (SCHEDULE_MARKER.Auto())
+            {
+                /*
+                 * Handed to the mover as a dependency rather than joined here. Congestion is a single threaded job
+                 * over every body and every cell, so joining it on the spot parked the main thread for the whole of
+                 * it, and at five thousand bodies that was the most expensive thing the mover did by some way,
+                 * spent entirely on waiting. Chaining says the same thing the join said, that the mover may not
+                 * write the positions and reference speeds congestion is reading, and says it to the scheduler
+                 * instead of to the clock.
+                 *
+                 * What the join was protecting is still protected. The field rebuild reads the cost array this
+                 * writes, and it runs either from the path scheduler at minus two hundred or from the driver's own
+                 * LateUpdate, and this component completes in a LateUpdate at minus one hundred, so the chain has
+                 * always finished before either of them looks.
+                 */
+                JobHandle dependency = ScheduleOccupancy(field, step);
 
-            /*
-             * All but the last substep are run to completion here, and only the final one is left in flight for
-             * LateUpdate to join. That keeps the ordinary single substep case exactly as it was, scheduled once and
-             * overlapped with the rest of the frame, and pays the synchronous cost only while the clock is pushed
-             * past what one step can carry.
-             */
-            int substeps = SubstepsFor(step, fastest, field.Grid.CellSize);
-            float substep = step / substeps;
+                /*
+                 * All but the last substep are run to completion here, and only the final one is left in flight for
+                 * LateUpdate to join. That keeps the ordinary single substep case exactly as it was, scheduled once
+                 * and overlapped with the rest of the frame, and pays the synchronous cost only while the clock is
+                 * pushed past what one step can carry.
+                 */
+                int substeps = SubstepsFor(step, fastest, field.Grid.CellSize);
+                float substep = step / substeps;
 
-            LastSubsteps = substeps;
+                LastSubsteps = substeps;
 
-            for (int i = 1; i < substeps; i++)
-                ScheduleMove(field, substep).Complete();
+                /*
+                 * Cleared after the first schedule, whichever one that turns out to be, because a dependency that
+                 * has already been joined is not one any later job needs to carry.
+                 */
+                for (int i = 1; i < substeps; i++)
+                {
+                    ScheduleMove(field, substep, dependency).Complete();
+                    dependency = default;
+                }
 
-            _handle = ScheduleMove(field, substep);
+                _handle = ScheduleMove(field, substep, dependency);
+            }
 
             _scheduled = true;
             JobHandle.ScheduleBatchedJobs();
+        }
+
+        /*
+         * Below the slowest a body that has already given up could still legitimately be driven, which is what
+         * keeps giving up from being permanent.
+         *
+         * A settled body is driven at SettledDriveScale, and on top of that the crowd term can take it down to
+         * MinimumSpeedFraction, so the two multiplied are the least it can be asked for while still meaning to
+         * move. Anything at or above that threshold is a body creeping through a jam, which is progress and has to
+         * release it; only below it is a body actually going nowhere.
+         *
+         * Getting this wrong in the safe looking direction is what would hurt. A threshold at the drive scale
+         * alone reads a body shuffling forward in a dense queue as stuck, so it never takes its stop back and the
+         * queue drains at a quarter of the pace it should, which looks like the crowd being sluggish rather than
+         * like a threshold being wrong.
+         */
+        /// <summary>
+        /// The fraction of its unobstructed speed a body has to fall below before it counts as going nowhere.
+        /// </summary>
+        private float StallThreshold()
+        {
+            float crowd = slowInCrowds ? minimumSpeedFraction : 1f;
+
+            return math.max(settledDriveScale * crowd * .6f, .02f);
         }
 
         /*
@@ -574,8 +656,9 @@ namespace MiHordeTraffic.Movement
         /// </summary>
         /// <param name="field">The field to read.</param>
         /// <param name="step">How much time this step covers.</param>
+        /// <param name="dependency">Work that has to finish before the mover may touch the buffers, or default for none.</param>
         /// <returns>The handle to join.</returns>
-        private JobHandle ScheduleMove(GridFlowField field, float step)
+        private JobHandle ScheduleMove(GridFlowField field, float step, JobHandle dependency)
         {
             return new HordeFlowMoveJob
             {
@@ -613,9 +696,15 @@ namespace MiHordeTraffic.Movement
                 Positions = _positions,
                 Reference = _reference,
                 Arrived = _arrived,
-                Frozen = _frozen
+                Frozen = _frozen,
+                Settled = _settled,
+                SettledDriveScale = settledDriveScale,
+                Stalled = _stalled,
+                StallTime = _stallTime,
+                StallSettleDelay = stallSettleDelay > 0f ? stallSettleDelay : float.MaxValue,
+                StallSpeedFraction = StallThreshold()
             }
-            .Schedule(_transforms);
+            .Schedule(_transforms, dependency);
         }
 
         private void LateUpdate() => Complete();
@@ -687,8 +776,8 @@ namespace MiHordeTraffic.Movement
         }
 
         /*
-         * Tells separation which bodies have finished, which is the difference between a crowd that settles around
-         * a target and one that shoves itself about forever.
+         * Tells separation which bodies are not trying to advance, which is the difference between a crowd that
+         * settles and one that shoves itself about forever.
          *
          * Separation already knows how to hold a settled body still: it pushes them at a fraction of the usual
          * strength, so an arriving body moves and the bodies already in place mostly do not. That mechanism was
@@ -698,8 +787,14 @@ namespace MiHordeTraffic.Movement
          * Asymmetric by construction, which is what stops the wave. The arriving body is still trying to move and
          * takes the full push; the bodies already there take fifteen percent of it, so the newcomer is the one that
          * gives ground rather than the crowd rearranging itself to let it in.
+         *
+         * Two reasons a body is not trying, not one. Arrival was the only one for a long time, and because settling
+         * spreads outwards from bodies that report it, that quietly meant the only crowd that could ever settle was
+         * one standing on the goal. A jam at a bridge or a doorway had no body anywhere in it that had arrived, so
+         * nothing seeded, nothing spread, and every body in it pressed at full speed into the back of the one in
+         * front for as long as the jam lasted. Being stuck is the second reason, and it is the common one.
          */
-        private void PublishArrival()
+        private void PublishStopped()
         {
             for (int i = 0; i < _bodies.Count; i++)
             {
@@ -711,7 +806,7 @@ namespace MiHordeTraffic.Movement
                  */
                 if (body.IsFrozen) continue;
 
-                body.SetWantsToMove(_arrived[i] == 0);
+                body.SetWantsToMove(_arrived[i] == 0 && _stalled[i] == 0);
             }
         }
 
@@ -736,7 +831,8 @@ namespace MiHordeTraffic.Movement
 
             _scheduled = false;
 
-            PublishArrival();
+            using (PUBLISH_MARKER.Auto())
+                PublishStopped();
         }
 
         /// <summary>
@@ -778,6 +874,9 @@ namespace MiHordeTraffic.Movement
             _reference[slot] = 0f;
             _arrived[slot] = 0;
             _frozen[slot] = 0;
+            _settled[slot] = 0;
+            _stalled[slot] = 0;
+            _stallTime[slot] = 0f;
             _lastPosition[slot] = body.transform.position;
 
             body.FlowIndex = slot;
@@ -792,10 +891,25 @@ namespace MiHordeTraffic.Movement
 
             int last = _bodies.Count - 1;
 
+            /*
+             * Every buffer that EnsureCapacity grows rather than replaces has to move with the body, because those
+             * are exactly the ones holding state from earlier frames. The ones it replaces are rewritten in full
+             * before anything reads them, so they need nothing here.
+             *
+             * Three of them were missing, and the two that matter both feed the settle path. A body swapped into a
+             * despawned body's slot inherited its stall timer, so a body that had been stuck for most of the settle
+             * delay handed that to whoever took its place and the newcomer settled on its next frame having never
+             * been blocked by anything. It inherited the open speed ramp too, which is what the stall test measures
+             * against, so the same swap could also have it read as stuck immediately. On a crowd that despawns
+             * constantly that is a steady trickle of bodies deciding they have given up for no reason at all.
+             */
             _bodies[index] = _bodies[last];
             _bodies[index].FlowIndex = index;
             _heading[index] = _heading[last];
             _currentSpeed[index] = _currentSpeed[last];
+            _openSpeed[index] = _openSpeed[last];
+            _progress[index] = _progress[last];
+            _stallTime[index] = _stallTime[last];
             _lastPosition[index] = _lastPosition[last];
             _bodies.RemoveAt(last);
             _transforms.RemoveAtSwapBack(index);
@@ -848,6 +962,8 @@ namespace MiHordeTraffic.Movement
             Replace(ref _reference, capacity);
             Replace(ref _arrived, capacity);
             Replace(ref _frozen, capacity);
+            Replace(ref _settled, capacity);
+            Replace(ref _stalled, capacity);
 
             /*
              * Carried across rather than replaced. Dropping headings turned every body on the roster to face
@@ -860,6 +976,7 @@ namespace MiHordeTraffic.Movement
             Grow(ref _openSpeed, capacity, _capacity);
             Grow(ref _progress, capacity, _capacity);
             Grow(ref _lastPosition, capacity, _capacity);
+            Grow(ref _stallTime, capacity, _capacity);
 
             _capacity = capacity;
         }

@@ -25,7 +25,7 @@ namespace MiHordeTraffic.Separation
         [SerializeField, Min(16)] private int initialCapacity = 1024;
 
         [Header("Crowding")]
-        [SerializeField] private bool blockingEnabled = false;
+        [SerializeField] private bool blockingEnabled = true;
         [SerializeField, Min(1)] private int blockingNeighbours = 3;
         [SerializeField, Range(1, 255)] private int settledHoldTicks = 8;
         [SerializeField, Range(0f, 1f)] private float settledPushScale = .15f;
@@ -39,6 +39,7 @@ namespace MiHordeTraffic.Separation
         [SerializeField] private float pushStrength = 8f;
         [SerializeField] private float maxPushSpeed = 4f;
         [SerializeField, Range(.05f, 1f)] private float resolveFraction = .5f;
+        [SerializeField, Range(0f, .5f)] private float overlapTolerance = .04f;
 
         /// <summary>
         /// How many frames pass between recalculations. 1 is every frame, 3 is every third frame.
@@ -76,6 +77,11 @@ namespace MiHordeTraffic.Separation
         /// the ones in front of it. Bodies in a group with this on are expected to report a real SeparationGoal
         /// and to say honestly whether they are trying to advance.
         /// </summary>
+        /*
+         * Defaulted on now that FLOW_FIELD publishes the driver's target as every body's goal. It was off because
+         * the only component that ever set a goal was the optional HordeEntity, so out of the box this cost a
+         * neighbour comparison per overlapping pair to compute a flag that could never become true.
+         */
         public bool BlockingEnabled => blockingEnabled;
 
         /// <summary>
@@ -108,6 +114,23 @@ namespace MiHordeTraffic.Separation
          * like. A setting whose failure mode is "the system quietly stops working" should not be able to reach it.
          */
         public float ResolveFraction => Mathf.Max(resolveFraction, .05f);
+
+        /// <summary>
+        /// How deep two bodies may overlap before anything pushes them apart, as a fraction of their combined radii.
+        /// Zero resolves every overlap however small, which is what leaves a settled crowd buzzing. Higher lets the
+        /// crowd pack tighter and go still sooner, at the cost of visible interpenetration.
+        /// </summary>
+        /*
+         * The same trick every rigid body solver uses, and for the same reason. Chasing an exact non overlapping
+         * arrangement of a few hundred bodies that are all pressed together is a problem with no stable answer:
+         * resolving one pair creates the next, so the crowd never reaches a state where nothing needs correcting
+         * and instead settles into a permanent low amplitude churn. Allowing a little overlap gives that search
+         * somewhere to stop.
+         *
+         * Deliberately a fraction rather than a distance, so it stays the same proportion of a body whether the
+         * crowd is made of rats or of siege engines.
+         */
+        public float OverlapTolerance => Mathf.Clamp(overlapTolerance, 0f, .5f);
 
         /// <summary>
         /// Whether a body that settled while still wanting to advance slides towards emptier ground rather than
@@ -155,7 +178,8 @@ namespace MiHordeTraffic.Separation
             DetourDensityWeight = detourDensityWeight,
             BlockingEnabled = blockingEnabled,
             BlockingNeighbours = blockingNeighbours,
-            SettledPushScale = settledPushScale
+            SettledPushScale = settledPushScale,
+            OverlapTolerance = overlapTolerance
         };
 
         /// <summary>
@@ -173,6 +197,7 @@ namespace MiHordeTraffic.Separation
             blockingEnabled = tuning.BlockingEnabled;
             blockingNeighbours = Mathf.Max(1, tuning.BlockingNeighbours);
             settledPushScale = Mathf.Clamp01(tuning.SettledPushScale);
+            overlapTolerance = Mathf.Clamp(tuning.OverlapTolerance, 0f, .5f);
         }
 
     }

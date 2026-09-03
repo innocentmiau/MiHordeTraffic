@@ -31,6 +31,7 @@ namespace MiHordeTraffic.Separation
         public bool BlockingEnabled;
         [Min(1)] public int BlockingNeighbours;
         [Range(0f, 1f)] public float SettledPushScale;
+        [Range(0f, .5f)] public float OverlapTolerance;
 
     }
 }

@@ -99,6 +99,8 @@ namespace MiHordeTraffic.Pathing
          */
         private int _warmup;
 
+        private readonly HordePhaseTimings _phases = new HordePhaseTimings();
+
         private IHordePathTechnique _active;
         private HordePathTechnique _activeTechnique;
         private int _cursor;
@@ -137,6 +139,8 @@ namespace MiHordeTraffic.Pathing
                 _stats[i].Clear();
                 _frames[i].Clear();
             }
+
+            _phases.Clear();
         }
 
         /*
@@ -161,10 +165,16 @@ namespace MiHordeTraffic.Pathing
             for (int i = 0; i < values.Length; i++)
             {
                 HordePathTechnique value = (HordePathTechnique)values.GetValue(i);
-                FrameTimeStats frame = _frames[(int)value].Resolve();
+                FrameTimeSamples samples = _frames[(int)value];
+                FrameTimeStats frame = samples.Resolve();
 
                 text.Append("  ").AppendLine(value.ToString());
                 text.Append("    frame      ").AppendLine(frame.Count == 0 ? "not run" : frame.ToString());
+
+                if (samples.Dropped > 0)
+                    text.Append("               ").Append(samples.Dropped)
+                        .AppendLine(" stalls over a second discarded, which is a pause or a load rather than a frame");
+
                 text.Append("    scheduler  ").AppendLine(_stats[(int)value].ToString());
             }
 
@@ -177,6 +187,8 @@ namespace MiHordeTraffic.Pathing
                 text.Append("    rebuilds   ").Append(driver.Builds).Append(" at ")
                     .Append(driver.AverageBuildMilliseconds.ToString("F3")).AppendLine(" ms average");
             }
+
+            _phases.AppendTo(text);
 
             return text.ToString();
         }
@@ -335,6 +347,8 @@ namespace MiHordeTraffic.Pathing
 
             _bodies.Clear();
             _instance = null;
+
+            _phases.Dispose();
         }
 
         private void Update()
@@ -383,7 +397,11 @@ namespace MiHordeTraffic.Pathing
             _stats[(int)_activeTechnique].Record(elapsed * 1000000d / System.Diagnostics.Stopwatch.Frequency, _repathsLastFrame);
 
             if (_warmup > 0) _warmup--;
-            else _frames[(int)_activeTechnique].Add(Time.unscaledDeltaTime * 1000f);
+            else
+            {
+                _frames[(int)_activeTechnique].Add(Time.unscaledDeltaTime * 1000f);
+                _phases.Sample();
+            }
 
             /*
              * Advanced by a whole budget rather than to wherever the scan stopped, so the window moves across the

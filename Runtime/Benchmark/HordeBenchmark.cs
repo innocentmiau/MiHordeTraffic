@@ -87,6 +87,16 @@ namespace MiHordeTraffic.Benchmark
         private bool _burstActive;
         private int _repathCursor;
 
+        /*
+         * What the crowd standing there is actually configured for, as against what the field says. The mode was
+         * applied once per agent as it was created and nowhere else, so editing it mid run looked like it did
+         * nothing at all, and the change then arrived silently on the next spawn, which reads as the spawn being
+         * broken rather than as the edit having been queued. Holding what was applied is what lets an edit reach
+         * the crowd that is already there.
+         */
+        private HordeBenchmarkMode _appliedMode;
+        private bool _warnedAboutTechnique;
+
         /// <summary>
         /// Smoothed unscaled frame time in milliseconds.
         /// </summary>
@@ -129,15 +139,20 @@ namespace MiHordeTraffic.Benchmark
         public int SpawnCount => spawnCount;
 
         /// <summary>
-        /// Which avoidance the next spawn will configure its agents for.
+        /// Which avoidance the crowd is running.
         /// </summary>
         public HordeBenchmarkMode Mode => mode;
 
         /// <summary>
-        /// Switches which avoidance is used. Takes effect on the next spawn, since the mode is applied per agent as it is created.
+        /// Switches which avoidance is used, on the crowd already standing there as well as on the next spawn.
         /// </summary>
-        /// <param name="value">The mode to configure the next spawn with.</param>
-        public void SetMode(HordeBenchmarkMode value) => mode = value;
+        /// <param name="value">The mode to run from now on.</param>
+        public void SetMode(HordeBenchmarkMode value)
+        {
+            mode = value;
+
+            ApplyModeToSpawned();
+        }
 
         /// <summary>
         /// Whether the overlay is currently drawing.
@@ -191,9 +206,12 @@ namespace MiHordeTraffic.Benchmark
                 _agents.Add(ConfigureAgent(spawned));
             }
 
+            _appliedMode = mode;
             _settleCountdown = settleSeconds;
             _samples.Clear();
             _liveStats = _samples.Resolve();
+
+            WarnAboutTechnique();
         }
 
         private void Start()
@@ -207,6 +225,14 @@ namespace MiHordeTraffic.Benchmark
         {
             float frameMs = Time.unscaledDeltaTime * 1000f;
             _smoothedFrameMs = Mathf.Lerp(_smoothedFrameMs, frameMs, SAMPLE_SMOOTHING);
+
+            /*
+             * Polled rather than driven from SetMode, because the field is edited in the inspector far more often
+             * than the setter is called, and an inspector edit goes straight to the field. An enum compare a frame
+             * is the price of the edit meaning the same thing whichever way it was made.
+             */
+            if (mode != _appliedMode) ApplyModeToSpawned();
+            else WarnAboutTechnique();
 
             RepathBatch();
 
@@ -333,20 +359,112 @@ namespace MiHordeTraffic.Benchmark
         /// </summary>
         private NavMeshAgent ConfigureAgent(GameObject spawned)
         {
-            NavMeshAgent agent = spawned.GetComponentInChildren<NavMeshAgent>();
-            HordeAgent separation = spawned.GetComponentInChildren<HordeAgent>(true);
-
-            if (separation) separation.enabled = mode == HordeBenchmarkMode.SEPARATION_SYSTEM;
+            NavMeshAgent agent = ApplyModeTo(spawned);
 
             if (!agent) return null;
-
-            agent.obstacleAvoidanceType = mode == HordeBenchmarkMode.BUILT_IN_AVOIDANCE ? builtInQuality : ObstacleAvoidanceType.NoObstacleAvoidance;
 
             if (target && agent.isOnNavMesh) agent.SetDestination(target.position);
 
             AssignTarget(spawned);
 
             return agent;
+        }
+
+        /*
+         * Switching a HordeAgent off is what takes a body out of the separation system, and it is also what takes
+         * it off the flow field, because registering with the mover is something that component does from its own
+         * OnEnable. So the two modes that are not the separation system hand the body back to its NavMeshAgent, and
+         * the agent has to be put back on for that to mean anything: flow mode switched it off when it took the
+         * body over, and the one thing that ever switches it back on is the component being disabled here.
+         *
+         * Left out, the body has a disabled NavMeshAgent, no place on the mover's roster, and nothing anywhere
+         * driving it. It stands exactly where it spawned and every setting on it reads as correct.
+         */
+        /// <summary>
+        /// Puts one object into whichever avoidance the current mode calls for, and hands back its agent.
+        /// </summary>
+        /// <param name="spawned">The spawned object to configure.</param>
+        /// <returns>Its NavMeshAgent, or null when it has none.</returns>
+        private NavMeshAgent ApplyModeTo(GameObject spawned)
+        {
+            NavMeshAgent agent = spawned.GetComponentInChildren<NavMeshAgent>();
+            HordeAgent separation = spawned.GetComponentInChildren<HordeAgent>(true);
+
+            bool separated = mode == HordeBenchmarkMode.SEPARATION_SYSTEM;
+
+            if (separation) separation.enabled = separated;
+
+            if (!agent) return null;
+
+            agent.obstacleAvoidanceType = mode == HordeBenchmarkMode.BUILT_IN_AVOIDANCE ? builtInQuality : ObstacleAvoidanceType.NoObstacleAvoidance;
+
+            if (!separated) agent.enabled = true;
+
+            return agent;
+        }
+
+        /// <summary>
+        /// Applies the current mode to the crowd that is already standing there, rather than only to the next spawn.
+        /// </summary>
+        private void ApplyModeToSpawned()
+        {
+            _appliedMode = mode;
+
+            for (int i = 0; i < _spawned.Count; i++)
+            {
+                GameObject spawned = _spawned[i];
+
+                if (!spawned) continue;
+
+                _agents[i] = ApplyModeTo(spawned);
+            }
+
+            WarnAboutTechnique();
+
+            /*
+             * Whatever was measured belonged to the mode that has just been replaced, so it is thrown away and the
+             * settle window starts again. Averaging across a change is how one mode's cost ends up reported as the
+             * other's.
+             */
+            if (_spawned.Count > 0) ResetStats();
+        }
+
+        /*
+         * The two axes have to agree and nothing said so. Avoidance mode decides whether the HordeAgent is enabled,
+         * and that same component is what puts a body on the flow field's roster, so any mode other than the
+         * separation system leaves the crowd with no place on the field. That is fine and intended while the
+         * technique is the NavMeshAgent, which is the comparison the mode exists to make, and it is a crowd nothing
+         * drives at all while the technique is the flow field.
+         *
+         * Warned rather than corrected, because either half is a reasonable thing to have meant and picking one
+         * would silently discard the other. Once per time the pair falls out of step, not once per frame.
+         */
+        /// <summary>
+        /// Says so when the avoidance mode and the pathfinding technique cannot both be what they are.
+        /// </summary>
+        private void WarnAboutTechnique()
+        {
+            HordePathScheduler scheduler = HordePathScheduler.Instance;
+
+            bool handsBodiesToAgents = mode != HordeBenchmarkMode.SEPARATION_SYSTEM;
+            bool onField = scheduler && scheduler.Technique == HordePathTechnique.FLOW_FIELD;
+
+            if (!handsBodiesToAgents || !onField)
+            {
+                _warnedAboutTechnique = false;
+                return;
+            }
+
+            if (_warnedAboutTechnique) return;
+
+            _warnedAboutTechnique = true;
+
+            Debug.LogWarning(
+                $"[HordeBenchmark] Mode {mode} switches every HordeAgent off, and that is also the component that puts a body " +
+                $"on the flow field's roster, so nothing is left driving the crowd while the technique is {HordePathTechnique.FLOW_FIELD}. " +
+                $"Set the HordePathScheduler's technique to {HordePathTechnique.NAVMESH_AGENT} to measure this mode, " +
+                $"or set the mode back to {HordeBenchmarkMode.SEPARATION_SYSTEM} to stay on the field.",
+                this);
         }
 
         /*

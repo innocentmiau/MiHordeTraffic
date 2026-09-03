@@ -73,6 +73,7 @@ namespace MiHordeTraffic.Separation
         public float MaxPushSpeed;
         public float InverseDeltaTime;
         public float ResolveFraction;
+        public float OverlapTolerance;
 
         public bool BlockingEnabled;
         public bool DetourEnabled;
@@ -171,7 +172,18 @@ namespace MiHordeTraffic.Separation
                 }
 
                 float distance = math.sqrt(distanceSquared);
-                accumulated += delta * ((minimumDistance - distance) / distance);
+
+                /*
+                 * Subtracted from the depth rather than from the range the pair is found at, so how deep an overlap
+                 * has to be before it is worth undoing is separate from how deep it has to be to count as a
+                 * neighbour standing in the way. Folding the two together would quietly loosen the settle spread
+                 * every time the tolerance was raised.
+                 */
+                float depth = minimumDistance - distance - minimumDistance * OverlapTolerance;
+
+                if (depth <= 0f) continue;
+
+                accumulated += delta * (depth / distance);
             }
             while (Grid.TryGetNextValue(out other, ref iterator));
 

@@ -19,6 +19,18 @@ namespace MiHordeTraffic.Benchmark
     public class FrameTimeSamples
     {
 
+        /*
+         * A frame longer than this did not happen. Pausing the editor, dragging a window, a domain reload or an
+         * asset import all arrive here as one sample worth tens of seconds, and because the mean is accumulated
+         * exactly rather than out of the ring, one of them is enough to put the average of a two thousand frame
+         * run an order of magnitude above the median and make the one number people read first a lie.
+         *
+         * Discarded rather than clamped, and counted rather than discarded quietly. Clamping would still bend the
+         * mean by whatever the ceiling is, and dropping a sample without saying so is how a genuinely stuttering
+         * build gets reported as smooth.
+         */
+        private const float STALL_CEILING_MILLISECONDS = 1000f;
+
         private readonly float[] _samples;
         private readonly float[] _sorted;
 
@@ -27,6 +39,7 @@ namespace MiHordeTraffic.Benchmark
         private float _max;
         private int _writeIndex;
         private int _filled;
+        private int _dropped;
 
         /// <summary>
         /// How many frames have been recorded since the last Clear.
@@ -37,6 +50,11 @@ namespace MiHordeTraffic.Benchmark
         /// How many of those frames the percentiles are drawn from, which stops climbing once the ring is full.
         /// </summary>
         public int WindowCount => _filled;
+
+        /// <summary>
+        /// How many samples were thrown out for being longer than any real frame, which is worth printing when it is not zero.
+        /// </summary>
+        public int Dropped => _dropped;
 
         /// <summary>
         /// Builds a collector sized for a fixed number of frames.
@@ -58,14 +76,21 @@ namespace MiHordeTraffic.Benchmark
             _max = 0f;
             _writeIndex = 0;
             _filled = 0;
+            _dropped = 0;
         }
 
         /// <summary>
-        /// Records one frame. Never drops anything from the mean, max or count, and overwrites the oldest entry in the percentile window.
+        /// Records one frame, unless it is too long to have been one. Overwrites the oldest entry in the percentile window.
         /// </summary>
         /// <param name="milliseconds">The frame time to record.</param>
         public void Add(float milliseconds)
         {
+            if (milliseconds > STALL_CEILING_MILLISECONDS)
+            {
+                _dropped++;
+                return;
+            }
+
             _total += milliseconds;
             _totalCount++;
             _max = Mathf.Max(_max, milliseconds);

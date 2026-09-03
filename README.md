@@ -27,7 +27,7 @@ Youtube video showing the project and difference with Unity's way: https://www.y
 - **Congestion aware routing.** Each cell is priced by how fast bodies actually cross it. A jammed bridge costs more to walk through, so an alternative wins the moment it is genuinely cheaper, and the whole crowd gets the same answer on the same frame.
 - **Reactive separation.** Jobified, Burst compiled, spatial hashed. Replaces the built in local avoidance.
 - **Crowd slowing.** Bodies ease off approaching a full cell, which turns a pile up into a queue.
-- **Settling.** Bodies that have arrived stop pushing, so a crowd around a target settles instead of churning.
+- **Settling.** The stop spreads outwards ring by ring from the bodies that arrived, so a crowd around a target comes to rest instead of churning against itself forever.
 - **Freeze and resume.** A frozen body skips everything that costs but goes on occupying the ground it stands on, so the crowd routes around it rather than walking into it.
 - **Runtime technique switching.** Flip between the flow field and stock `NavMeshAgent` on the same crowd and read both sets of numbers, so any claim here can be checked rather than believed.
 - **Presets instead of raw numbers** for everything where "is 5 a lot?" has no answer.
@@ -175,6 +175,41 @@ Cheaper settings are not merely slower to react: the crowd walks confidently at 
 
 ---
 
+## Settling
+
+A crowd converging on one point has no stable arrangement to find. Every body steers at the goal, the ones in front are in the way, separation shoves them apart, and the pack churns forever because neither side can win. Left alone that reads as a permanent low amplitude friction wave through the whole crowd, and it is the same thing a jammed granular material does: the pressure from bodies still arriving travels through the contacts and comes back out.
+
+Four things stop it, and all four are on by default.
+
+**Bodies that are stuck say so.** Settling spreads outwards from bodies that report they are not trying to advance, so something has to report it first. Arriving was the only thing that ever did, which quietly meant the only crowd that could settle was one standing on the goal: a jam at a bridge or a doorway contained no body that had arrived, so nothing seeded, nothing spread, and every body in it drove at full speed into the back of the one in front for as long as the jam lasted.
+
+A body that keeps wanting to move and keeps not moving is the second and far more common reason. `stallSettleDelay` is how many seconds it presses before accepting it is not getting through. Progress is measured along its heading against the speed it would have made on open ground, so being shoved sideways by the crowd does not count and a body pushed backwards reads as worse than standing still.
+
+**The stop spreads.** A body settles when enough of the neighbours it is already overlapping are both closer to its goal than it is and have settled themselves. The ring that genuinely arrived settles first, the ring behind it sees settled neighbours ahead and settles, and it moves outwards a ring per tick. This is the approach RTS games have used for decades, and it carries the same information a carved navmesh would without touching the navmesh.
+
+This is measured against each body's own goal, so `FLOW_FIELD` publishes the driver's target to separation every frame. Nothing has to be wired up for it.
+
+**Settled bodies stop driving, not just stop shoving.** `settledDriveScale` is how hard a body still walks once it has settled, as a fraction of its speed. Set it to `1` and you get the old behaviour: a settled crowd is a pile of bodies all pressing inwards while separation is asked to gently shove them apart, which is a damper bolted to the wrong end of a pressure source. `0` is worse in a different way, because a queue drains from the front and a body that has stopped completely cannot take the room the body ahead of it just vacated. The default of `.25` lets a queue shuffle forward while killing the churn.
+
+A settled body still reports the speed it *would* have managed on open ground, so congestion still prices its cell as solid and bodies further back route around rather than joining the back of it.
+
+**Overlaps below a threshold are left alone.** `overlapTolerance` is how deep two bodies may overlap before anything pushes them apart, as a fraction of their combined radii. At zero, a sub millimetre overlap still generates a full strength push, resolving it creates the next one, and the crowd never reaches a state where nothing needs correcting. Every rigid body solver allows a little penetration for this reason. Raising it packs tighter and goes still sooner; lowering it keeps bodies visibly apart at the cost of more buzz.
+
+It is subtracted from the overlap depth and not from the range a neighbour is found at, so changing it does not quietly loosen the settle spread as well.
+
+There is no knob for how slow counts as stuck. It is derived from `settledDriveScale` and `minimumSpeedFraction`, because the safe range for it is entirely decided by those two: giving up scales a body's drive down, and a threshold above the reduced pace would mean nothing that gave up could ever take it back. A crowd that froze the first time it touched itself is not a setting worth offering.
+
+| Field | Default | Raise it to | Lower it to |
+| --- | --- | --- | --- |
+| `stallSettleDelay` | `.5` s | Let bodies fight for their route longer before giving up | Calm a jam sooner, at the cost of a crowd that gives up while squeezing past itself. Zero switches it off, and jams away from the goal never settle |
+| `settledDriveScale` | `.25` | Keep queues moving, at the cost of more pressure on the crowd ahead | Kill churn harder, at the cost of queues that drain slowly. Zero makes anything that gives up a permanent statue |
+| `overlapTolerance` | `.04` | Pack tighter and settle sooner, at the cost of visible interpenetration | Keep bodies apart, at the cost of a crowd that never fully stops |
+| `settledPushScale` | `.15` | Let settled bodies ooze apart faster | Hold formation harder. Zero leaves bodies that settled while overlapping stuck inside each other |
+| `blockingNeighbours` | `3` | Pack tighter, churn more | Spread the stop further out, pack looser |
+| `settledHoldTicks` | `8` | Steadier at the edge of a crowd, slower to set off again | React sooner, at the cost of flickering on the boundary |
+
+---
+
 ## Numbers with units
 
 These stay as plain numbers because they describe themselves and depend on your map.
@@ -187,6 +222,7 @@ These stay as plain numbers because they describe themselves and depend on your 
 | `arriveTaper` | metres | The distance over which it eases to a stop, rather than switching off at a line |
 | `separationRadius` | metres | Room a body wants around itself. Kept separate from the navmesh radius, which is also wall clearance |
 | `facingTolerance` / `facingLimit` | degrees | Only used when `requireFacing` is on |
+| `overlapTolerance` | fraction of combined radii | Not metres, so it stays the same proportion of a body whether the crowd is rats or siege engines |
 
 ---
 
@@ -196,7 +232,19 @@ These stay as plain numbers because they describe themselves and depend on your 
 
 It catches rebuilds taking too large a share of frame time, a saturated repath budget, substepping at normal speed (which means bodies cross more than half a cell per frame, and the wall check cannot see through that), a grid that is mostly not walkable, a grid large enough that congestion dominates, and a crowd dense enough that the grid can no longer tell one part of it from another.
 
-**`HordePathScheduler`** prints a session report on quit with per technique frame times, so the two techniques can be compared on the same crowd.
+**`HordePathScheduler`** prints a session report on quit with per technique frame times, so the two techniques can be compared on the same crowd. Under those it prints a `phases` table: milliseconds of main thread time per frame in each stage, read off the profiler markers the package already carries.
+
+Frames longer than a second are counted separately and left out of the distribution. Pausing the editor, dragging a window and a domain reload all arrive as one sample worth tens of seconds, and the mean is accumulated exactly rather than out of the percentile ring, so a single one of them puts the average of a two thousand frame run an order of magnitude above the median.
+
+The rows overlap on purpose. `Pathing.Schedule` contains the field rebuild, and the `Move` and `Complete` rows are waits on jobs the same frame scheduled, so `counted` is a ceiling rather than a sum, and a low number there means the horde is not what is slow.
+
+### Read the renderer before you tune the crowd
+
+A crowd that has settled is a crowd standing in one place, and a few thousand characters in one place is a very different thing to draw than the same characters spread over a hundred metres. Everything is in frustum, everything overlaps, everything casts a shadow into the same few metres. A change that improves how the crowd behaves can make the frame slower without a single line of it being slower, and the number that gives it away is the gap between `counted` and the frame time.
+
+The case this was written from: five thousand characters went from eleven milliseconds a frame to thirty on a change to their animation, and `counted` was two and a half of the thirty. The prefab had no `LODGroup`, so every one of them drew its full geometry at every distance, around a hundred and fifty million vertices a frame. Adding one and letting them fall to a cheaper mesh took it to fifteen million and the frame back to eleven.
+
+Simulation cost per body is flat. Rendering cost per body is not: it depends on where the body is, what is in front of it and how much of the screen it covers, and all three of those are things the crowd system changes on purpose. Check `counted` against the frame first, and if it is a small fraction, the crowd is not the thing to tune.
 
 **`HordeFlowFieldGizmos`** draws the field. Cost is drawn on a log scale, because cost is a ratio: half pace is a cost of 2, and on a linear scale to 30 that is three percent of the way to red and indistinguishable from open ground, when half pace is exactly where a detour starts being worth taking.
 

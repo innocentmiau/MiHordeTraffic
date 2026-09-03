@@ -148,6 +148,15 @@ namespace MiHordeTraffic.Separation
             Transform bodyTransform = body.SeparationTransform;
             if (!bodyTransform) return;
 
+            /*
+             * Refused rather than trusted, the same way the mover's roster refuses one. A body that registers twice
+             * without a removal in between takes two slots and its index names only the second, so the first is a
+             * row nothing can ever remove: TryRemove finds the body at the index it was told about, and the earlier
+             * duplicate stays on the roster after the object is gone. Every frame after that the apply loop calls
+             * through a destroyed reference.
+             */
+            if (body.SeparationIndex >= 0) return;
+
             int index = _bodies.Count;
 
             /*
@@ -191,11 +200,19 @@ namespace MiHordeTraffic.Separation
             int last = _bodies.Count - 1;
 
             /*
-             * The offset moves with the body that is swapped into this slot. It is the one piece of per body state
-             * that survives between frames, so leaving it behind would hand the moved body a stranger's displacement.
+             * The push moves with the body that is swapped into this slot. It is per body state that survives
+             * between frames, so leaving it behind would hand the moved body a stranger's displacement, and it was
+             * the one thing this was written to carry and the one thing it did not.
+             *
+             * It reaches a body through the pair of buffers and the sent flag together. The flag was already being
+             * carried, so a moved body could arrive claiming it had a push outstanding while the slot underneath it
+             * held the departed body's, and the apply loop would hand it over on any frame that ran before the next
+             * solve overwrote it.
              */
             _bodies[index] = _bodies[last];
             _bodies[index].SeparationIndex = index;
+            _pushFront[index] = _pushFront[last];
+            _pushBack[index] = _pushBack[last];
             _wantsToMoveBack[index] = _wantsToMoveBack[last];
             _wantsToMoveFront[index] = _wantsToMoveFront[last];
             _settledFront[index] = _settledFront[last];
@@ -434,6 +451,7 @@ namespace MiHordeTraffic.Separation
                 MaxPushSpeed = _settings.MaxPushSpeed,
                 InverseDeltaTime = deltaTime > 0f ? 1f / deltaTime : 0f,
                 ResolveFraction = _settings.ResolveFraction,
+                OverlapTolerance = _settings.OverlapTolerance,
                 DetourEnabled = _settings.DetourEnabled,
                 DetourStrength = _settings.DetourStrength,
                 DetourDensityWeight = _settings.DetourDensityWeight,

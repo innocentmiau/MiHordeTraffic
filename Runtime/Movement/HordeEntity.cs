@@ -48,6 +48,14 @@ namespace MiHordeTraffic.Movement
         private float _repathCountdown;
         private bool _frozen;
         private bool _settled;
+        /*
+         * Cached as a plain bool because the tick asks it every frame for every body. Comparing a UnityEngine.Object
+         * against null calls out to native to ask whether the native half is still alive, which is the cost this
+         * whole component exists to keep out of the per body path. Reading a property on a reference already known
+         * to be good is managed only.
+         */
+        private bool _hasSeparation;
+
         private int _repathIndex = -1;
         private float _nextRepathTime;
         private float _lastRepathTime;
@@ -279,7 +287,9 @@ namespace MiHordeTraffic.Movement
             _requestedDestination = Vector3.positiveInfinity;
             _repathCountdown = staggerFirstRepath ? Random.value * repathInterval : 0f;
 
-            if (separation) separation.SeparationSettledChanged += OnSeparationSettledChanged;
+            _hasSeparation = separation;
+
+            if (_hasSeparation) separation.SeparationSettledChanged += OnSeparationSettledChanged;
 
             HordePathScheduler.Register(this);
 
@@ -303,6 +313,31 @@ namespace MiHordeTraffic.Movement
         /// <param name="deltaTime">Frame time.</param>
         public void TickBody(float deltaTime)
         {
+            /*
+             * Stood down while the mover is driving this particular body, which is a different question from which
+             * mode the crowd is in and was written as though it were the same one. Everything past here belongs to
+             * the mover for as long as it holds a body: the separation goal and the wants to move flag are what
+             * separation reads to decide who has settled, and the mover publishes both every frame from what the
+             * movement job measured, where RefreshGoal would publish them on a repath interval from what a
+             * NavMeshAgent would have thought, and FaceTarget writes transform.rotation, which the job also writes.
+             *
+             * Asked of the body rather than of the static mode, because a body can be out of the mover's hands
+             * while the crowd around it is still in flow mode. Disabling a HordeAgent is the ordinary way to take
+             * one body off the field, and it is what the benchmark does to every body when it measures built in
+             * avoidance against this. A disabled HordeAgent never registers, so nothing is moving that body, and a
+             * gate on the mode alone stood its pathfinding down as well and left it standing still with nothing
+             * driving it at all.
+             *
+             * FlowIndex is written when the mover takes a body onto its roster and cleared when it lets one go, so
+             * it answers exactly the question being asked. It costs two managed reads, where the agent enabled
+             * check underneath was a call out to native for every body on every frame.
+             */
+            if (_hasSeparation && separation.FlowIndex >= 0)
+            {
+                _facing = false;
+                return;
+            }
+
             if (!agent.enabled) return;
 
             if (_facing) FaceTarget();

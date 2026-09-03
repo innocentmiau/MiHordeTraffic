@@ -94,6 +94,16 @@ namespace MiHordeTraffic.Movement
          */
         [ReadOnly] public NativeArray<byte> Frozen;
 
+        /*
+         * Which bodies separation has decided are not getting anywhere: they have arrived, or enough of the
+         * neighbours between them and the goal have already given up. Read here because settling had until now
+         * only ever been applied to the push, which is the reaction, and never to the drive, which is the cause.
+         * A settled body was still being handed a full speed pointed at the goal every frame, so the crowd at a
+         * destination was a pile of bodies all pressing inwards while separation was told to shove them apart
+         * gently. That is a pressure source with a damper bolted to the wrong end of it.
+         */
+        [ReadOnly] public NativeArray<byte> Settled;
+
         [NativeDisableParallelForRestriction] public NativeArray<float2> Heading;
         [NativeDisableParallelForRestriction] public NativeArray<float> CurrentSpeed;
         /*
@@ -105,6 +115,36 @@ namespace MiHordeTraffic.Movement
          */
         [NativeDisableParallelForRestriction] public NativeArray<float> OpenSpeed;
         [NativeDisableParallelForRestriction] public NativeArray<float3> LastPosition;
+
+        /*
+         * How long this body has wanted to move and not managed it. Carried between frames because one frame of
+         * being blocked is a body squeezing past somebody, and only a run of them is a body that is stuck.
+         */
+        [NativeDisableParallelForRestriction] public NativeArray<float> StallTime;
+
+        /*
+         * Not zero. A queue behind a chokepoint settles from the front backwards, and a settled body that stops
+         * completely cannot take up the room the body in front of it just vacated, so the queue would only ever
+         * drain at the rate the settle flag decays. A fraction lets it shuffle forward, which is both what a real
+         * queue does and what keeps the flag from being a second way to deadlock.
+         */
+        public float SettledDriveScale;
+
+        /*
+         * How long a body presses before it accepts it is not getting through. Too short and a crowd gives up
+         * every time it brushes past itself; too long and a jam churns for that long before it calms down.
+         */
+        public float StallSettleDelay;
+
+        /*
+         * The fraction of what a body wanted that counts as getting somewhere. Derived from SettledDriveScale
+         * rather than set, and deliberately below it, because the two together are a feedback loop otherwise:
+         * giving up scales the drive down, and if the reduced drive still reads as not getting anywhere then
+         * nothing that gave up could ever take it back, and the crowd would freeze solid the first time it
+         * touched. Below it, a body that can actually creep at its reduced pace is by definition not stuck and
+         * lets go, which is what makes a queue drain rather than set.
+         */
+        public float StallSpeedFraction;
 
         public bool SlowInCrowds;
         /*
@@ -154,6 +194,15 @@ namespace MiHordeTraffic.Movement
          * the two the same is what leaves the ring around a target shoving itself about forever.
          */
         [WriteOnly] public NativeArray<byte> Arrived;
+
+        /*
+         * Whether this body has given up, handed back for the same reason arrival is. Until this existed, the only
+         * thing in the whole system that ever told separation a body was not trying to advance was standing within
+         * ArriveRadius of the goal. Settling spreads outwards from bodies that say so, so a crowd jammed anywhere
+         * that was not the goal itself, a bridge, a doorway, the back of another crowd, had nothing to spread from
+         * and every body in it drove at full speed into the one in front for as long as it was there.
+         */
+        [WriteOnly] public NativeArray<byte> Stalled;
 
         /*
          * Searched as expanding rings so the first hit is the nearest, and bounded so a body genuinely far from any
@@ -225,10 +274,11 @@ namespace MiHordeTraffic.Movement
          * follows what is actually achievable instead. Deceleration is allowed to be sharper than acceleration
          * because running into a crowd should register immediately while leaving one can afford to be gradual.
          */
-        private float ResolveSpeed(int index, float3 position, float2 heading, float desired)
+        private float ResolveSpeed(int index, float3 position, float2 heading, float desired, out float achieved)
         {
             float current = CurrentSpeed[index];
-            float achieved = math.dot(position.xz - LastPosition[index].xz, heading) * InverseDeltaTime;
+
+            achieved = math.dot(position.xz - LastPosition[index].xz, heading) * InverseDeltaTime;
 
             LastPosition[index] = position;
 
@@ -300,6 +350,8 @@ namespace MiHordeTraffic.Movement
                 Reference[index] = 0f;
                 OpenSpeed[index] = 0f;
                 Arrived[index] = 0;
+                Stalled[index] = 0;
+                StallTime[index] = 0f;
                 return;
             }
 
@@ -340,6 +392,24 @@ namespace MiHordeTraffic.Movement
             float steering = 0f;
 
             /*
+             * Taken out before the clears below, because both are last frame's value and both are read again inside
+             * the branch that walks a route. Clearing the slot first and reading the array afterwards is the same
+             * slot, so the read came back zero every frame and took two mechanisms down with it.
+             *
+             * OpenSpeed at zero left the ramp one acceleration step wide, so a body walking at three and a half
+             * metres a second reported an unobstructed speed of about a tenth of that. Congestion prices a cell by
+             * comparing progress against that reference, so every jam on the map measured as flowing perfectly.
+             *
+             * StallTime at zero restarted the stall accumulator every frame, so it could never reach the settle
+             * delay and Stalled was written as zero for every body on every frame since it was added. The only way
+             * left to settle a crowd was standing inside the arrive radius, which is the exact behaviour the stall
+             * path was written to replace: a jam at a doorway or at the back of another crowd had nothing anywhere
+             * in it that had arrived, so nothing seeded a stop and the whole queue pressed forever.
+             */
+            float previousOpenSpeed = OpenSpeed[index];
+            float previousStallTime = StallTime[index];
+
+            /*
              * Zero unless this body is actually walking a route, so congestion skips anything that has no opinion
              * about how fast it should be going: bodies recovering onto the grid, bodies with no flow to follow,
              * and bodies that have arrived. None of them is failing to make progress, and averaging their stillness
@@ -347,6 +417,13 @@ namespace MiHordeTraffic.Movement
              */
             Reference[index] = 0f;
             OpenSpeed[index] = 0f;
+
+            /*
+             * Cleared for the same reason Reference is. A body that is off the grid, has no flow to follow or has
+             * arrived is not failing to get anywhere, so none of them should be seeding a stop through the crowd.
+             */
+            Stalled[index] = 0;
+            StallTime[index] = 0f;
 
             if (onGrid)
             {
@@ -365,15 +442,41 @@ namespace MiHordeTraffic.Movement
                      * walking pace it cannot physically have reached yet. It rises at the acceleration limit and
                      * falls only when the body genuinely wants less, never because something is in its way.
                      */
-                    float openSpeed = math.min(open, OpenSpeed[index] + Acceleration * DeltaTime);
+                    float openSpeed = math.min(open, previousOpenSpeed + Acceleration * DeltaTime);
 
                     OpenSpeed[index] = openSpeed;
                     Reference[index] = openSpeed;
                     steering = openSpeed;
 
-                    float speed = ResolveSpeed(index, position, heading, open * CrowdFactor(position, flow, cell));
+                    /*
+                     * Applied to the speed the body is driven at and deliberately not to Reference above it.
+                     * Reference is what congestion prices the cell against, and it has to stay the speed the body
+                     * would have managed on open ground: scaling it here too would have a settled crowd report
+                     * that it wanted to crawl and managed to crawl, which is the cell describing itself as clear
+                     * at the exact moment it is most solid. Bodies further back would then walk straight into it.
+                     */
+                    float drive = Settled[index] != 0 ? SettledDriveScale : 1f;
+
+                    float speed = ResolveSpeed(index, position, heading, open * drive * CrowdFactor(position, flow, cell), out float achieved);
 
                     velocity += new float3(heading.x, 0f, heading.y) * speed;
+
+                    /*
+                     * Measured against the unobstructed ramp rather than against CurrentSpeed. CurrentSpeed is
+                     * deliberately dragged down towards whatever the body is managing, so a body that has given up
+                     * eventually reports that it wanted to stand still and succeeded, and the one signal that says
+                     * it is stuck cancels itself out. OpenSpeed never falls for being blocked, which is the whole
+                     * reason it is kept separately, so it is the only honest thing to compare against.
+                     *
+                     * Progress is taken along the heading, so being shoved sideways by the crowd is not mistaken
+                     * for getting somewhere, and a body pushed backwards reads as worse than standing still.
+                     */
+                    bool stalling = openSpeed > STEERING_EPSILON && achieved < openSpeed * StallSpeedFraction;
+
+                    float stalled = stalling ? previousStallTime + DeltaTime : 0f;
+
+                    StallTime[index] = stalled;
+                    Stalled[index] = (byte)(stalled >= StallSettleDelay ? 1 : 0);
                 }
             }
             else
