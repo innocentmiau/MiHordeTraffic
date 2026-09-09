@@ -26,22 +26,25 @@ namespace MiHordeTraffic.Movement
     /// Averages each cell's price over its neighbourhood and eases the field's costs towards the result.
     /// </summary>
     [BurstCompile(FloatPrecision.Low, FloatMode.Fast)]
-    public struct HordeCongestionSpreadJob : IJobParallelFor
+    public struct HordeCongestionSpreadJob : IJobParallelForDefer
     {
 
         public HordeGridInfo Grid;
 
+        [ReadOnly] public NativeArray<int> Active;
         [ReadOnly] public NativeArray<byte> Walkable;
         [ReadOnly] public NativeArray<float> Targets;
 
-        public NativeArray<float> Cost;
+        [NativeDisableParallelForRestriction] public NativeArray<float> Cost;
 
         public int BlurRadius;
         public float Rise;
         public float Fall;
 
-        public void Execute(int index)
+        public void Execute(int slot)
         {
+            int index = Active[slot];
+
             if (Walkable[index] == 0) return;
 
             int radius = math.max(BlurRadius, 0);

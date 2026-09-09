@@ -31,6 +31,14 @@ namespace MiHordeTraffic.Movement
         [ReadOnly] public NativeArray<float2> Flow;
         [ReadOnly] public NativeArray<float> Reference;
 
+        /*
+         * Membership of the active set, kept as a flag per cell beside the list so asking whether a cell is already
+         * in it is a read rather than a search. A body walking into a cell nothing has touched for a while is the
+         * only way a cell joins, so this is the one place that has to be right.
+         */
+        public NativeArray<byte> Touched;
+        public NativeList<int> Active;
+
         public NativeArray<float> Progress;
         public NativeArray<float> SpeedSum;
         public NativeArray<float> ReferenceSum;
@@ -54,6 +62,22 @@ namespace MiHordeTraffic.Movement
                 int cell = Grid.IndexOf(position);
 
                 if (cell < 0) continue;
+
+                /*
+                 * Zeroed on the way in rather than by the clear pass, because the clear only knows about cells that
+                 * were already being tracked. A cell joining the set now holds whatever it held the last time
+                 * anybody stood in it, which could be minutes ago.
+                 */
+                if (Touched[cell] == 0)
+                {
+                    Touched[cell] = 1;
+                    Active.Add(cell);
+
+                    SpeedSum[cell] = 0f;
+                    ReferenceSum[cell] = 0f;
+                    Counts[cell] = 0;
+                    Occupancy[cell] = 0;
+                }
 
                 /*
                  * Counted before anything else, so a body that arrived and stopped still makes the cell it stands

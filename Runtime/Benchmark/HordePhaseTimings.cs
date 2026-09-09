@@ -53,7 +53,41 @@ namespace MiHordeTraffic.Benchmark
         private readonly ProfilerRecorder[] _recorders = new ProfilerRecorder[PHASE_NAMES.Length];
         private readonly double[] _totals = new double[PHASE_NAMES.Length];
 
+        /*
+         * This frame's readings on their own, kept beside the running totals so a single frame can be looked at.
+         * An average over a couple of thousand frames cannot answer what went wrong on one of them: a frame that
+         * took a tenth of a second moves every row by four hundredths of a millisecond, which is to say it hides
+         * completely in exactly the report you would go to for it.
+         */
+        private readonly double[] _current = new double[PHASE_NAMES.Length];
+
         private int _frames;
+
+        /// <summary>
+        /// The names of the phases, in the order a frame runs them, with the package prefix stripped.
+        /// </summary>
+        public static string[] Names
+        {
+            get
+            {
+                string[] names = new string[PHASE_NAMES.Length];
+
+                for (int i = 0; i < PHASE_NAMES.Length; i++)
+                    names[i] = PHASE_NAMES[i].Substring("MiHordeTraffic.".Length);
+
+                return names;
+            }
+        }
+
+        /// <summary>
+        /// How many phases there are, which is the width of a single frame's readings.
+        /// </summary>
+        public static int PhaseCount => PHASE_NAMES.Length;
+
+        /// <summary>
+        /// What the last Sample call read, one entry per phase in milliseconds. Overwritten every frame.
+        /// </summary>
+        public double[] Current => _current;
 
         /// <summary>
         /// Whether any marker was found, which is false in a build with the profiler stripped out.
@@ -84,10 +118,14 @@ namespace MiHordeTraffic.Benchmark
                 if (!_recorders[i].Valid)
                 {
                     _recorders[i] = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, PHASE_NAMES[i]);
+                    _current[i] = 0d;
                     continue;
                 }
 
-                _totals[i] += _recorders[i].LastValue / NANOSECONDS_PER_MILLISECOND;
+                double reading = _recorders[i].LastValue / NANOSECONDS_PER_MILLISECOND;
+
+                _current[i] = reading;
+                _totals[i] += reading;
             }
 
             _frames++;

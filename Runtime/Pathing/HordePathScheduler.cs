@@ -77,6 +77,15 @@ namespace MiHordeTraffic.Pathing
         [SerializeField, Min(0f)] private float nearDistance = 10f;
         [SerializeField, Min(0f)] private float farDistance = 60f;
 
+        /*
+         * Off at zero, and worth leaving on. It records nothing unless a frame turns out to be among the slowest of
+         * the run, so the cost is one compare a frame against the slowest already kept, which almost every frame
+         * fails. Four is enough to tell a recurring shape from a one off; a bigger project wanting more can say so.
+         */
+        [Header("Diagnostics")]
+        [Tooltip("How many of the slowest frames to keep a full phase breakdown for. Zero switches it off.")]
+        [SerializeField, Min(0)] private int worstFramesTracked = 4;
+
         [Header("Starvation")]
         [SerializeField, Min(0f)] private float guaranteedInterval = 4f;
 
@@ -100,6 +109,8 @@ namespace MiHordeTraffic.Pathing
         private int _warmup;
 
         private readonly HordePhaseTimings _phases = new HordePhaseTimings();
+
+        private HordeWorstFrames _worst;
 
         private IHordePathTechnique _active;
         private HordePathTechnique _activeTechnique;
@@ -141,6 +152,7 @@ namespace MiHordeTraffic.Pathing
             }
 
             _phases.Clear();
+            _worst?.Clear();
         }
 
         /*
@@ -189,6 +201,8 @@ namespace MiHordeTraffic.Pathing
             }
 
             _phases.AppendTo(text);
+
+            if (_phases.Available) _worst?.AppendTo(text, HordePhaseTimings.Names);
 
             return text.ToString();
         }
@@ -306,6 +320,7 @@ namespace MiHordeTraffic.Pathing
             }
 
             _instance = this;
+            _worst = new HordeWorstFrames(worstFramesTracked, HordePhaseTimings.PhaseCount);
 
             for (int i = 0; i < PENDING.Count; i++)
                 AddBody(PENDING[i]);
@@ -399,8 +414,17 @@ namespace MiHordeTraffic.Pathing
             if (_warmup > 0) _warmup--;
             else
             {
-                _frames[(int)_activeTechnique].Add(Time.unscaledDeltaTime * 1000f);
+                float frameMilliseconds = Time.unscaledDeltaTime * 1000f;
+
+                _frames[(int)_activeTechnique].Add(frameMilliseconds);
                 _phases.Sample();
+
+                /*
+                 * Offered after the sample rather than before it, so the readings belong to the frame being judged
+                 * rather than to the one before it.
+                 */
+                if (_worst != null)
+                    _worst.Consider(frameMilliseconds, _phases.Current, HordeFlowMovement.Instance ? HordeFlowMovement.Instance.LastSubsteps : 1);
             }
 
             /*

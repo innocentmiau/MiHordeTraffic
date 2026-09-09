@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using Unity.AI.Navigation;
 using Unity.Mathematics;
@@ -109,6 +110,8 @@ namespace MiHordeTraffic.Pathing.FlowField
         private const int LARGE_GRID_CELLS = 250000;
 
         private readonly GridFlowField _field = new GridFlowField();
+
+        private readonly List<HordeBlockRequest> _blocks = new List<HordeBlockRequest>();
 
         private double _totalMilliseconds;
         private int _builds;
@@ -353,6 +356,8 @@ namespace MiHordeTraffic.Pathing.FlowField
              */
             if (Driven) TryPromoteBuild();
             else Rebuild(Time.deltaTime);
+
+            ApplyPendingBlocks();
         }
 
         /*
@@ -363,6 +368,75 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// Says the field is out of date, so the next interval actually rebuilds it rather than skipping.
         /// </summary>
         public void MarkDirty() => _dirty = true;
+
+        /*
+         * Queued rather than applied on the spot, because the walkability array is being read by the expansion for
+         * as long as one is in flight, and on a large grid that is most of every interval. Applied at the top of
+         * the next frame that has no expansion running, which is a handful of frames at worst.
+         *
+         * Bodies stop walking into it sooner than that. The movement job tests walkability on every step it takes,
+         * so the moment the cells go the crowd stops entering them, and only the routing waits for the next
+         * expansion to notice. In between, bodies aim through the new structure and are stopped at its edge, which
+         * separation then spreads out around it.
+         */
+        /// <summary>
+        /// Takes the ground under an area out of the grid, so the crowd routes around whatever was built there.
+        /// </summary>
+        /// <param name="area">The world area the structure covers.</param>
+        /// <param name="updateRouting">Whether the field is expanded again so the crowd routes around it, rather than only walking into it and sliding past.</param>
+        public void BlockArea(Bounds area, bool updateRouting = true) =>
+            _blocks.Add(new HordeBlockRequest { Area = area, Delta = 1, UpdateRouting = updateRouting });
+
+        /// <summary>
+        /// Gives back ground taken by a matching BlockArea, if the bake found it walkable to begin with.
+        /// </summary>
+        /// <param name="area">The same world area that was blocked.</param>
+        /// <param name="updateRouting">Whether the field is expanded again for it.</param>
+        public void UnblockArea(Bounds area, bool updateRouting = true) =>
+            _blocks.Add(new HordeBlockRequest { Area = area, Delta = -1, UpdateRouting = updateRouting });
+
+        /// <summary>
+        /// How many block or unblock requests are waiting for a frame with no expansion in flight.
+        /// </summary>
+        public int PendingBlocks => _blocks.Count;
+
+        /*
+         * Only when nothing is reading the array. An expansion already in flight was started against the old
+         * walkability and will finish against it, which is correct: it produces the field as it was a moment ago,
+         * and the rebuild these changes ask for replaces it.
+         */
+        private void ApplyPendingBlocks()
+        {
+            if (_blocks.Count == 0 || _field.HasPendingBuild) return;
+
+            bool changed = false;
+
+            /*
+             * Nothing is applied before there is a grid to apply it to, and nothing is thrown away for having
+             * arrived early either. A structure enabled in a scene that bakes on start would otherwise be queued,
+             * found unapplicable, and cleared along with the rest, leaving an obstacle that looks configured and
+             * blocks nothing for the rest of the session.
+             */
+            if (!_field.IsBaked) return;
+
+            for (int i = 0; i < _blocks.Count; i++)
+            {
+                HordeBlockRequest request = _blocks[i];
+
+                if (!_field.ApplyBlock(request.Area, edgeClearance, request.Delta)) continue;
+
+                /*
+                 * Only the requests that asked for it. A batch holding one static building and twenty carts has to
+                 * expand for the building, and would otherwise expand for the carts as well and give back exactly
+                 * what leaving them out of the routing was for.
+                 */
+                changed |= request.UpdateRouting;
+            }
+
+            _blocks.Clear();
+
+            if (changed) _dirty = true;
+        }
 
         /*
          * Promoted when it happens to be finished rather than waited for. The main thread's share of an expansion
@@ -390,6 +464,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         public bool Rebuild(float deltaTime)
         {
             TryPromoteBuild();
+            ApplyPendingBlocks();
 
             if (!target || !_field.IsBaked) return false;
 

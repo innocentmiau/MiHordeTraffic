@@ -5,32 +5,37 @@ using Unity.Jobs;
 namespace MiHordeTraffic.Movement
 {
     /*
-     * The first of four passes that used to be one single threaded job over every cell in the grid. Splitting them
-     * is what lets three of the four run on every worker at once, and the reason it matters is that three of them
-     * are proportional to the grid and only one is proportional to the crowd. On a kilometre of map at one metre a
-     * frame spent four million writes here before a single body had been looked at.
+     * The first of the congestion passes, and it now runs over the cells that have something in them rather than
+     * over the grid. Five thousand bodies can stand in at most five thousand cells; on a kilometre of map at one
+     * metre the other nine hundred and ninety five thousand hold nothing, are heading for nothing, and used to be
+     * cleared and repriced every frame anyway.
      *
-     * Nothing in this pass reads anything, so there is no order to preserve inside it and every index is
-     * independent. It is pure bandwidth, which is exactly the shape that parallelises perfectly.
+     * The active set is what the gather adds to and the prune takes away from, so this walks a list whose length is
+     * only known once the previous frame's prune has run. Deferred scheduling is what lets that be true: the length
+     * is read when the job starts rather than when it is queued.
      */
     /// <summary>
-    /// Empties the per cell accumulators before a frame's bodies are counted into them.
+    /// Empties the per cell accumulators of every cell still being tracked, before a frame's bodies are counted in.
     /// </summary>
     [BurstCompile(FloatPrecision.Low, FloatMode.Fast)]
-    public struct HordeCongestionClearJob : IJobParallelFor
+    public struct HordeCongestionClearJob : IJobParallelForDefer
     {
 
-        [WriteOnly] public NativeArray<float> SpeedSum;
-        [WriteOnly] public NativeArray<float> ReferenceSum;
-        [WriteOnly] public NativeArray<int> Counts;
-        [WriteOnly] public NativeArray<int> Occupancy;
+        [ReadOnly] public NativeArray<int> Active;
+
+        [NativeDisableParallelForRestriction] public NativeArray<float> SpeedSum;
+        [NativeDisableParallelForRestriction] public NativeArray<float> ReferenceSum;
+        [NativeDisableParallelForRestriction] public NativeArray<int> Counts;
+        [NativeDisableParallelForRestriction] public NativeArray<int> Occupancy;
 
         public void Execute(int index)
         {
-            SpeedSum[index] = 0f;
-            ReferenceSum[index] = 0f;
-            Counts[index] = 0;
-            Occupancy[index] = 0;
+            int cell = Active[index];
+
+            SpeedSum[cell] = 0f;
+            ReferenceSum[cell] = 0f;
+            Counts[cell] = 0;
+            Occupancy[cell] = 0;
         }
 
     }

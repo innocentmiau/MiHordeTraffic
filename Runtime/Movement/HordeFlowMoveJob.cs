@@ -77,6 +77,12 @@ namespace MiHordeTraffic.Movement
         private const float FACING_EPSILON = .0001f;
         private const float STEERING_EPSILON = .05f;
 
+        /*
+         * Cosine of half a degree or so, expressed as a quaternion dot. Below this a body is facing where it wants
+         * to and writing the rotation again would only cost the transform update.
+         */
+        private const float FACING_SETTLED_DOT = .9999f;
+
         public HordeGridInfo Grid;
 
         [ReadOnly] public NativeArray<float2> Flow;
@@ -163,7 +169,12 @@ namespace MiHordeTraffic.Movement
         public float Deceleration;
         public float StallFraction;
         public float TurnSpeed;
-        public float HeadingTurnRate;
+        /*
+         * Cosine and sine of how far a body may turn in one step, which is the same for all of them, so it is
+         * worked out once on the way in rather than five thousand times inside the job.
+         */
+        public float TurnLimitCos;
+        public float TurnLimitSin;
 
         public bool RequireFacing;
         public float FacingCosTolerance;
@@ -207,18 +218,33 @@ namespace MiHordeTraffic.Movement
         /*
          * Searched as expanding rings so the first hit is the nearest, and bounded so a body genuinely far from any
          * walkable ground gives up rather than scanning the grid every frame for something that is not there.
+         *
+         * Ground the expansion reached is preferred and ground it did not is accepted, which is the difference
+         * between getting a body out and sending it through a wall. A body inside a structure that has just closed
+         * on top of it is off the described map, so it keeps the right to move onto ground the grid says nothing
+         * about, and the only thing deciding where it goes is what comes back from here. Demanding a route as well
+         * as footing means that in a sealed region nothing qualifies, this returns nothing, and the caller falls
+         * back to walking at the goal, which that body is allowed to do straight through everything in the way.
+         *
+         * Footing alone ends it. The body steps out onto walkable ground, stops being undescribed, loses the
+         * exemption with it, and queues against the barrier like everything else behind it.
          */
         /// <summary>
-        /// A direction towards the closest cell the goal can actually be reached from, or zero when none is in range.
+        /// A direction to the closest cell worth standing on, preferring one the goal can be reached from.
         /// </summary>
-        private float3 NearestReachable(float3 position)
+        private float3 NearestFooting(float3 position)
         {
             int2 origin = Grid.CellOf(position);
+
+            float3 footing = float3.zero;
 
             for (int radius = 1; radius <= RecoverySearchRadius; radius++)
             {
                 float bestDistance = float.MaxValue;
                 float3 best = float3.zero;
+
+                float footingDistance = float.MaxValue;
+                float3 nearestWalkable = float3.zero;
 
                 for (int z = -radius; z <= radius; z++)
                 for (int x = -radius; x <= radius; x++)
@@ -230,15 +256,19 @@ namespace MiHordeTraffic.Movement
 
                     int index = Grid.IndexOf(cell);
 
-                    /*
-                     * Rescuing onto ground that is walkable but cut off would only move the problem, so the target
-                     * has to be somewhere the expansion actually reached.
-                     */
-                    if (Walkable[index] == 0 || Integration[index] == float.MaxValue) continue;
+                    if (Walkable[index] == 0) continue;
 
                     float3 centre = Grid.CentreOf(cell);
                     float3 offset = new float3(centre.x - position.x, 0f, centre.z - position.z);
                     float distance = math.lengthsq(offset);
+
+                    if (distance < footingDistance)
+                    {
+                        footingDistance = distance;
+                        nearestWalkable = offset;
+                    }
+
+                    if (Integration[index] == float.MaxValue) continue;
 
                     /*
                      * Best in the ring rather than first found, because scanning order otherwise decides between
@@ -251,9 +281,15 @@ namespace MiHordeTraffic.Movement
                 }
 
                 if (!best.Equals(float3.zero)) return math.normalizesafe(best, float3.zero);
+
+                /*
+                 * Kept from the first ring that had any, so the fallback is still the nearest footing rather than
+                 * whatever the last ring searched happened to hold.
+                 */
+                if (footing.Equals(float3.zero)) footing = nearestWalkable;
             }
 
-            return float3.zero;
+            return math.normalizesafe(footing, float3.zero);
         }
 
         /// <summary>
@@ -293,6 +329,19 @@ namespace MiHordeTraffic.Movement
             return current;
         }
 
+        /*
+         * Done as a rotation rather than through angles, because the angles cost seven library calls per body per
+         * frame and the answer needs none of them. Going via atan2 was three of those to find the two headings and
+         * their difference, then a sine and a cosine to build the result, for five thousand bodies every frame.
+         *
+         * What makes it avoidable is that the limit is the same for every body: it is a rate times the step, so its
+         * sine and cosine are worked out once when the job is scheduled and handed in. After that the dot product
+         * says whether the target is already within the limit, the cross product says which way round it is, and
+         * turning by the limit is a two by two rotation.
+         *
+         * The cross product is what keeps this taking the short way. It changes sign exactly at a half turn, which
+         * is the wrap the atan2 of the difference was there to handle.
+         */
         /// <summary>
         /// Turns a heading towards a desired direction at a limited rate, the short way round.
         /// </summary>
@@ -300,18 +349,12 @@ namespace MiHordeTraffic.Movement
         {
             if (heading.Equals(float2.zero)) return desired;
 
-            float current = math.atan2(heading.y, heading.x);
-            float want = math.atan2(desired.y, desired.x);
+            if (math.dot(heading, desired) >= TurnLimitCos) return desired;
 
-            /*
-             * Wrapped through atan2 of the difference so a turn from just under a half turn to just over it goes
-             * the short way rather than most of the way round the circle.
-             */
-            float delta = math.atan2(math.sin(want - current), math.cos(want - current));
-            float limit = HeadingTurnRate * DeltaTime;
-            float angle = current + math.clamp(delta, -limit, limit);
+            float cross = heading.x * desired.y - heading.y * desired.x;
+            float sin = cross >= 0f ? TurnLimitSin : -TurnLimitSin;
 
-            return new float2(math.cos(angle), math.sin(angle));
+            return new float2(heading.x * TurnLimitCos - heading.y * sin, heading.x * sin + heading.y * TurnLimitCos);
         }
 
         /// <summary>
@@ -368,7 +411,19 @@ namespace MiHordeTraffic.Movement
              * perfectly good cell under its feet, no flow to follow, and nothing to recover it. It stands there
              * for good. Treating unreachable ground the same as no ground is what lets it walk back out.
              */
-            bool onGrid = cell >= 0 && Walkable[cell] != 0 && Integration[cell] != float.MaxValue;
+            /*
+             * Two different questions, and answering them with one flag is what let a blocked crowd walk through
+             * walls. Standing on ground the grid describes is not the same as being able to reach the goal from it,
+             * and only the first of those earns a body the right to move wherever it likes.
+             *
+             * That right exists for a body the grid cannot describe at all: spawned off the mesh, or on a corner
+             * the erosion took. Refusing its steps is what stranded it, so it is allowed to walk back onto
+             * described ground. A body behind a shut gate is in the opposite situation. Its ground is fine, the
+             * route is gone, and handing it the same exemption let it walk straight at the goal through everything
+             * in between.
+             */
+            bool onWalkable = cell >= 0 && Walkable[cell] != 0;
+            bool onGrid = onWalkable && Integration[cell] != float.MaxValue;
             /*
              * Faded out over a band rather than switched off at a line. A hard threshold is a limit cycle waiting
              * to happen: inside it the pull is gone and separation shoves a body out, the moment it crosses back
@@ -530,7 +585,17 @@ namespace MiHordeTraffic.Movement
                  * into the wall forever. Aiming at the nearest walkable cell gets it back onto described ground
                  * from anywhere, and the field takes over the moment it arrives.
                  */
-                float3 rescue = NearestReachable(position);
+                /*
+                 * Searched only for a body the grid cannot describe. For one standing on walkable ground that
+                 * cannot reach the goal, the search cannot succeed and is not merely wasted: everything it can
+                 * walk to is in the same connected piece of ground it is standing on, and if any cell of that
+                 * piece could reach the goal the expansion would have come through this one on its way. So the
+                 * only cells that could answer are across ground it cannot cross to get to them.
+                 *
+                 * It matters as cost as much as correctness. A crowd shut behind a gate is thousands of bodies
+                 * each scanning out to the recovery radius every frame to be told what is already known.
+                 */
+                float3 rescue = onWalkable ? float3.zero : NearestFooting(position);
 
                 if (rescue.Equals(float3.zero) && !arrived)
                     rescue = math.normalizesafe(new float3(Goal.x - position.x, 0f, Goal.z - position.z), float3.zero);
@@ -553,7 +618,7 @@ namespace MiHordeTraffic.Movement
             int nextCell = Grid.IndexOf(next);
             bool nextWalkable = nextCell >= 0 && Walkable[nextCell] != 0;
 
-            if (!nextWalkable && onGrid)
+            if (!nextWalkable && onWalkable)
             {
                 /*
                  * Blocked, so try the two axes on their own before giving up. Refusing the whole step was what made
@@ -603,11 +668,14 @@ namespace MiHordeTraffic.Movement
                 next.y = Height[nextCell];
                 transform.position = next;
             }
-            else if (!onGrid)
+            else if (!onWalkable)
             {
                 /*
-                 * A recovering body is allowed to move onto ground the grid says nothing about, because refusing
-                 * that is what stranded it. Its height is left alone until it reaches a cell that has one.
+                 * A body the grid cannot describe is allowed to move onto ground it says nothing about, because
+                 * refusing that is what stranded it. Its height is left alone until it reaches a cell that has one.
+                 *
+                 * Asked of walkability alone, not of reachability. A body that can simply not get to the goal from
+                 * where it stands is not stranded, it is waiting, and it stays on the walkable side of the wall.
                  */
                 transform.position = next;
             }
@@ -640,8 +708,24 @@ namespace MiHordeTraffic.Movement
 
             if (math.lengthsq(aim) < FACING_EPSILON) return;
 
-            quaternion desired = quaternion.LookRotationSafe(new float3(aim.x, 0f, aim.y), math.up());
-            transform.rotation = math.slerp(transform.rotation, desired, math.saturate(TurnSpeed * DeltaTime));
+            quaternion current = transform.rotation;
+            quaternion want = quaternion.LookRotationSafe(new float3(aim.x, 0f, aim.y), math.up());
+
+            /*
+             * Not written when it is already right, and the saving is the write rather than the arithmetic. Unity's
+             * transform system does its work for transforms that changed, so assigning a rotation a body already
+             * holds costs the whole hierarchy update for it anyway.
+             *
+             * It matters now that a body which has arrived turns to follow a target moving around it. Before that
+             * those bodies returned above and never reached here; now every one of them faces a goal it is already
+             * facing, every frame, and a crowd settled around a target is most of the crowd.
+             *
+             * Compared as quaternions, where the dot is the cosine of half the angle between them, and taken as an
+             * absolute value because a quaternion and its negative are the same rotation.
+             */
+            if (math.abs(math.dot(current.value, want.value)) >= FACING_SETTLED_DOT) return;
+
+            transform.rotation = math.slerp(current, want, math.saturate(TurnSpeed * DeltaTime));
         }
 
     }

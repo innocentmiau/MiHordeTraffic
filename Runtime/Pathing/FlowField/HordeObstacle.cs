@@ -1,0 +1,109 @@
+using UnityEngine;
+
+namespace MiHordeTraffic.Pathing.FlowField
+{
+    /*
+     * A structure the crowd has to walk around, expressed as ground the grid stops offering rather than as
+     * something the navmesh has to be rebuilt to notice. Put one on a building prefab and the cells under it stop
+     * being walkable while it is enabled, and come back when it is not.
+     *
+     * Enable and disable rather than a pair of calls, so a pooled building works without anything remembering to
+     * undo it, and so a structure destroyed mid game cannot leave a hole in the map behind it.
+     *
+     * The area is taken once, on the way in, and kept. Reading it again on the way out would give back whichever
+     * cells the object covers wherever it has ended up, which for anything that was moved, scaled or knocked over
+     * is not the ground it took.
+     */
+    /// <summary>
+    /// Marks the ground under this object unwalkable for the horde grid while it is enabled.
+    /// </summary>
+    [DisallowMultipleComponent]
+    public class HordeObstacle : MonoBehaviour
+    {
+
+        [Tooltip("Size of the footprint in world units. Left at zero it is taken from a Collider on this object.")]
+        [SerializeField] private Vector3 size = Vector3.zero;
+
+        [Tooltip("Offset of the footprint from this object's position.")]
+        [SerializeField] private Vector3 centre = Vector3.zero;
+
+        private Bounds _applied;
+        private bool _blocked;
+
+        /// <summary>
+        /// The area this obstacle is currently taking out of the grid, which is empty when it is not blocking.
+        /// </summary>
+        public Bounds Applied => _applied;
+
+        private void Reset()
+        {
+            Collider collider = GetComponent<Collider>();
+
+            if (!collider) return;
+
+            size = collider.bounds.size;
+            centre = collider.bounds.center - transform.position;
+        }
+
+        private void OnEnable() => Block();
+
+        /*
+         * Retried here because script execution order decides whether this object's OnEnable runs before or after
+         * the driver's Awake, and an obstacle that found no driver on the way in would otherwise sit in the scene
+         * looking correct and blocking nothing at all.
+         */
+        private void Start() => Block();
+
+        private void Block()
+        {
+            if (_blocked) return;
+
+            HordeFlowFieldDriver driver = HordeFlowFieldDriver.Instance;
+
+            if (!driver) return;
+
+            _applied = Resolve();
+            _blocked = true;
+
+            driver.BlockArea(_applied);
+        }
+
+        private void OnDisable()
+        {
+            if (!_blocked) return;
+
+            _blocked = false;
+
+            HordeFlowFieldDriver driver = HordeFlowFieldDriver.Instance;
+
+            if (!driver) return;
+
+            driver.UnblockArea(_applied);
+        }
+
+        /*
+         * A collider is preferred over the serialized size because it is the thing the rest of the game already
+         * agrees is where this object is. Falling back to the transform's own scale is only for something with no
+         * collider at all, which is rare and is worth being able to express anyway.
+         */
+        private Bounds Resolve()
+        {
+            if (size != Vector3.zero) return new Bounds(transform.position + centre, size);
+
+            Collider collider = GetComponent<Collider>();
+
+            if (collider) return collider.bounds;
+
+            return new Bounds(transform.position + centre, transform.lossyScale);
+        }
+
+        private void OnDrawGizmosSelected()
+        {
+            Bounds area = Application.isPlaying && _blocked ? _applied : Resolve();
+
+            Gizmos.color = new Color(1f, .4f, .2f, .5f);
+            Gizmos.DrawWireCube(area.center, area.size);
+        }
+
+    }
+}

@@ -41,10 +41,12 @@ namespace MiHordeTraffic.Movement
         private const float HEXAGONAL_PACKING = .866f;
 
         /*
-         * Large because every one of these passes is a handful of arithmetic over contiguous memory, so the batch
-         * has to be big enough that scheduling a batch costs less than running one.
+         * Sized for the active set rather than for the grid. These passes used to run over every cell, where a
+         * thousand at a time was right; they now run over the cells the crowd is actually standing in, which is a
+         * few thousand at most, and a batch of a thousand would hand the whole job to two or three workers and
+         * leave the rest idle.
          */
-        private const int CONGESTION_BATCH = 1024;
+        private const int CONGESTION_BATCH = 128;
 
         private static readonly ProfilerMarker GATHER_MARKER = new ProfilerMarker("MiHordeTraffic.Movement.Gather");
         private static readonly ProfilerMarker MOVE_MARKER = new ProfilerMarker("MiHordeTraffic.Movement.Move");
@@ -208,12 +210,24 @@ namespace MiHordeTraffic.Movement
         private NativeArray<float> _reference;
         private NativeArray<int> _counts;
         private NativeArray<int> _occupancy;
+
+        /*
+         * Which cells the congestion pass is still tracking, and a flag per cell saying so. Everything congestion
+         * does used to run over the whole grid every frame, which is work proportional to the map rather than to
+         * the crowd: five thousand bodies stand in at most five thousand cells, and on a kilometre of map at one
+         * metre the other nine hundred and ninety five thousand were being cleared and repriced to say nothing.
+         *
+         * A list and a flag rather than a set, because the two questions asked of it are different. Walking the
+         * tracked cells wants a dense list, and asking whether one particular cell is already tracked wants an
+         * answer without a search.
+         */
+        private NativeArray<byte> _touched;
+        private NativeList<int> _active;
         private int _congestionCells;
         private float _cellCapacity = 1f;
 
         private JobHandle _handle;
         private bool _scheduled;
-        private bool _congestionScheduled;
         private int _capacity;
 
         /// <summary>
@@ -492,6 +506,8 @@ namespace MiHordeTraffic.Movement
             if (_referenceSum.IsCreated) _referenceSum.Dispose();
             if (_counts.IsCreated) _counts.Dispose();
             if (_occupancy.IsCreated) _occupancy.Dispose();
+            if (_touched.IsCreated) _touched.Dispose();
+            if (_active.IsCreated) _active.Dispose();
 
             _bodies.Clear();
 
@@ -688,7 +704,8 @@ namespace MiHordeTraffic.Movement
                 Deceleration = deceleration,
                 StallFraction = stallFraction,
                 TurnSpeed = turnSpeed,
-                HeadingTurnRate = headingTurnRate,
+                TurnLimitCos = math.cos(headingTurnRate * step),
+                TurnLimitSin = math.sin(headingTurnRate * step),
                 RequireFacing = requireFacing,
                 FacingCosTolerance = math.cos(math.radians(math.min(advanced.FacingTolerance, advanced.FacingLimit))),
                 FacingCosLimit = math.cos(math.radians(math.max(advanced.FacingLimit, advanced.FacingTolerance + .01f))),
@@ -749,12 +766,13 @@ namespace MiHordeTraffic.Movement
              */
             JobHandle clear = new HordeCongestionClearJob
             {
+                Active = _active.AsDeferredJobArray(),
                 SpeedSum = _speedSum,
                 ReferenceSum = _referenceSum,
                 Counts = _counts,
                 Occupancy = _occupancy
             }
-            .Schedule(cells, CONGESTION_BATCH);
+            .Schedule(_active, CONGESTION_BATCH, default);
 
             JobHandle gather = new HordeCongestionGatherJob
             {
@@ -763,6 +781,8 @@ namespace MiHordeTraffic.Movement
                 Previous = _previousPositions,
                 Flow = field.Flow,
                 Reference = _reference,
+                Touched = _touched,
+                Active = _active,
                 Progress = _progress,
                 SpeedSum = _speedSum,
                 ReferenceSum = _referenceSum,
@@ -778,12 +798,12 @@ namespace MiHordeTraffic.Movement
 
             JobHandle handle = new HordeCongestionPriceJob
             {
+                Active = _active.AsDeferredJobArray(),
                 Walkable = field.Walkable,
                 SpeedSum = _speedSum,
                 Counts = _counts,
                 Occupancy = _occupancy,
-                DensityPrevious = field.Density,
-                Density = field.DensityBack,
+                Density = field.Density,
                 ReferenceSum = _referenceSum,
                 WriteCost = congestionEnabled,
                 Rise = rise,
@@ -793,7 +813,7 @@ namespace MiHordeTraffic.Movement
                 ComfortableFill = comfortableFill,
                 JamFill = jamFill
             }
-            .Schedule(cells, CONGESTION_BATCH, gather);
+            .Schedule(_active, CONGESTION_BATCH, gather);
 
             /*
              * Only run when congestion is actually writing costs. It is the heaviest of the four, since it samples
@@ -803,6 +823,7 @@ namespace MiHordeTraffic.Movement
                 handle = new HordeCongestionSpreadJob
                 {
                     Grid = field.Grid,
+                    Active = _active.AsDeferredJobArray(),
                     Walkable = field.Walkable,
                     Targets = _referenceSum,
                     Cost = field.Cost,
@@ -810,11 +831,25 @@ namespace MiHordeTraffic.Movement
                     Rise = rise,
                     Fall = fall
                 }
-                .Schedule(cells, CONGESTION_BATCH, handle);
+                .Schedule(_active, CONGESTION_BATCH, handle);
+
+            /*
+             * Last, so it sees this frame's answers. A cell that has decayed back to empty is dropped here and
+             * costs nothing again until somebody stands in it.
+             */
+            handle = new HordeCongestionPruneJob
+            {
+                Occupancy = _occupancy,
+                Active = _active,
+                Touched = _touched,
+                Density = field.Density,
+                Cost = field.Cost,
+                ReferenceSum = _referenceSum,
+                WriteCost = congestionEnabled
+            }
+            .Schedule(handle);
 
             (_positions, _previousPositions) = (_previousPositions, _positions);
-
-            _congestionScheduled = true;
 
             return handle;
         }
@@ -880,6 +915,18 @@ namespace MiHordeTraffic.Movement
             Replace(ref _referenceSum, cells);
             Replace(ref _counts, cells);
             Replace(ref _occupancy, cells);
+            Replace(ref _touched, cells);
+
+            /*
+             * One, not zero, because the blur reads the neighbours of a tracked cell whether or not they are
+             * tracked themselves, and an untouched cell has to read as ordinary ground. Zero would have every cell
+             * beside the crowd blurring against a neighbourhood that looked free, which is backwards.
+             */
+            for (int i = 0; i < cells; i++)
+                _referenceSum[i] = 1f;
+
+            if (_active.IsCreated) _active.Clear();
+            else _active = new NativeList<int>(MINIMUM_CAPACITY, Allocator.Persistent);
 
             _congestionCells = cells;
         }
@@ -892,19 +939,6 @@ namespace MiHordeTraffic.Movement
                 _handle.Complete();
 
             _scheduled = false;
-
-            /*
-             * Promoted here rather than where it was written, because this is the one point in the frame where the
-             * congestion pass is known to be finished and nothing is reading the buffer it wrote into.
-             */
-            if (_congestionScheduled)
-            {
-                _congestionScheduled = false;
-
-                GridFlowField field = driver ? driver.Field : null;
-
-                field?.SwapDensity();
-            }
 
             using (PUBLISH_MARKER.Auto())
                 PublishStopped();

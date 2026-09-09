@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using MiHordeTraffic.Jobs;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -28,6 +29,18 @@ namespace MiHordeTraffic.Pathing.FlowField
         private static readonly ProfilerMarker BUILD_MARKER = new ProfilerMarker("MiHordeTraffic.Pathing.FlowField");
 
         private NativeArray<byte> _walkable;
+
+        /*
+         * What the bake decided, kept apart from what the jobs read, so a structure put down at runtime can be
+         * taken away again exactly. Blocking is an overlay on top of the bake rather than an edit of it: without
+         * the original there is no way to know whether a cell freed by demolishing a wall was ever walkable in the
+         * first place, and guessing turns every removed building into a hole in the map.
+         *
+         * A count rather than a flag, because footprints overlap. Two structures sharing a cell, or one landing
+         * inside another's clearance margin, both have to be gone before the ground comes back.
+         */
+        private NativeArray<byte> _walkableBaked;
+        private NativeArray<int> _blocked;
         private NativeArray<float> _cost;
         private NativeArray<float> _integration;
         private NativeArray<float2> _flow;
@@ -55,14 +68,6 @@ namespace MiHordeTraffic.Pathing.FlowField
         private NativeArray<float2> _flowBack;
         private NativeArray<float> _costSnapshot;
 
-        /*
-         * Density is double buffered for a different reason from the two above. The congestion pass reads the
-         * previous frame's smoothed occupancy and writes this frame's, and the movement job reads it at the same
-         * time to decide how much to ease off for the crowd ahead. One array cannot be all three of those things
-         * at once, and the movement job reading a value halfway through being rewritten is a body slowing down for
-         * a cell that is being measured rather than for one that is full.
-         */
-        private NativeArray<float> _densityBack;
 
 #if UNITY_EDITOR
         /*
@@ -178,6 +183,8 @@ namespace MiHordeTraffic.Pathing.FlowField
             int count = grid.Count;
 
             _walkable = new NativeArray<byte>(count, Allocator.Persistent);
+            _walkableBaked = new NativeArray<byte>(count, Allocator.Persistent);
+            _blocked = new NativeArray<int>(count, Allocator.Persistent);
             _cost = new NativeArray<float>(count, Allocator.Persistent);
             _costSnapshot = new NativeArray<float>(count, Allocator.Persistent);
             _integration = new NativeArray<float>(count, Allocator.Persistent);
@@ -186,7 +193,6 @@ namespace MiHordeTraffic.Pathing.FlowField
             _flowBack = new NativeArray<float2>(count, Allocator.Persistent);
             _height = new NativeArray<float>(count, Allocator.Persistent);
             _density = new NativeArray<float>(count, Allocator.Persistent);
-            _densityBack = new NativeArray<float>(count, Allocator.Persistent);
             _heap = new NativeList<GridFlowFieldBuildJob.HeapEntry>(math.max(count / 4, 64), Allocator.Persistent);
             _goalIndex = new NativeArray<int>(1, Allocator.Persistent);
 
@@ -225,6 +231,12 @@ namespace MiHordeTraffic.Pathing.FlowField
             }
 
             if (edgeClearance > 0f) walkable = Erode(edgeClearance);
+
+            /*
+             * Taken after the erosion, so the record of what the bake produced is the same thing the jobs were
+             * about to read. Blocking is layered on this, never on the pre erosion answer.
+             */
+            NativeArray<byte>.Copy(_walkable, _walkableBaked, count);
 
             WalkableCells = walkable;
         }
@@ -310,7 +322,12 @@ namespace MiHordeTraffic.Pathing.FlowField
                 Mode = mode,
                 Flow = _flowBack
             }
-            .Schedule(Grid.Count, 64, build);
+            /*
+             * Batched from the machine rather than by a constant. Sixty four was fine on the grid this was written
+             * against and is fifteen thousand dispatches on a kilometre of map at a metre, which is a job that
+             * spends much of its life handing out work while everything queued behind it waits for a worker.
+             */
+            .Schedule(Grid.Count, HordeJobBatch.For(Grid.Count), build);
 
             _scheduled = true;
             JobHandle.ScheduleBatchedJobs();
@@ -322,15 +339,6 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// </summary>
         public bool HasPendingBuild => _scheduled;
 
-        /// <summary>
-        /// The buffer the congestion pass writes this frame's smoothed occupancy into, which is not the one bodies read.
-        /// </summary>
-        public NativeArray<float> DensityBack => _densityBack;
-
-        /// <summary>
-        /// Promotes what the congestion pass just wrote to being what bodies read. Only ever called with no job in flight.
-        /// </summary>
-        public void SwapDensity() => (_density, _densityBack) = (_densityBack, _density);
 
         /*
          * Asked rather than waited on, which is the whole difference between a grid that can be a kilometre across
@@ -370,6 +378,62 @@ namespace MiHordeTraffic.Pathing.FlowField
             (_flow, _flowBack) = (_flowBack, _flow);
 
             IsBuilt = _goalIndex[0] >= 0;
+        }
+
+        /*
+         * Applied to the cells a structure covers rather than by re-sampling the navmesh, because the footprint is
+         * already known exactly and re-baking is a call out to native per cell across the whole grid. On a
+         * kilometre of map that is most of half a second to describe a two metre building.
+         *
+         * Nothing here touches the navmesh, and under flow movement nothing needs it to: the mover reads this grid
+         * and only this grid. A project that also runs NavMeshAgent movement has to keep the navmesh in step
+         * itself, which is what the async surface rebuild is for.
+         *
+         * The clearance is added to the footprint rather than re-running the erosion pass. Around a solid rectangle
+         * those are the same answer, and one is a loop over a handful of cells while the other is a loop over the
+         * map.
+         */
+        /// <summary>
+        /// Blocks or unblocks the cells an area covers, as an overlay on what the bake found.
+        /// </summary>
+        /// <param name="area">World area the structure covers.</param>
+        /// <param name="clearance">Extra margin to block around it, matching the bake's edge clearance.</param>
+        /// <param name="delta">One to block, minus one to unblock.</param>
+        /// <returns>True when the grid changed and the field needs expanding again.</returns>
+        public bool ApplyBlock(Bounds area, float clearance, int delta)
+        {
+            if (!IsBaked || delta == 0) return false;
+
+            float margin = math.max(clearance, 0f);
+
+            int2 min = Grid.CellOf(new float3(area.min.x - margin, 0f, area.min.z - margin));
+            int2 max = Grid.CellOf(new float3(area.max.x + margin, 0f, area.max.z + margin));
+
+            min = math.max(min, int2.zero);
+            max = math.min(max, new int2(Grid.Width - 1, Grid.Height - 1));
+
+            if (math.any(min > max)) return false;
+
+            bool changed = false;
+
+            for (int z = min.y; z <= max.y; z++)
+            for (int x = min.x; x <= max.x; x++)
+            {
+                int index = Grid.IndexOf(new int2(x, z));
+
+                _blocked[index] = math.max(_blocked[index] + delta, 0);
+
+                byte was = _walkable[index];
+                byte now = (byte)(_walkableBaked[index] != 0 && _blocked[index] == 0 ? 1 : 0);
+
+                if (was == now) continue;
+
+                _walkable[index] = now;
+                WalkableCells += now != 0 ? 1 : -1;
+                changed = true;
+            }
+
+            return changed;
         }
 
         /// <summary>
@@ -429,6 +493,8 @@ namespace MiHordeTraffic.Pathing.FlowField
             }
 
             if (_walkable.IsCreated) _walkable.Dispose();
+            if (_walkableBaked.IsCreated) _walkableBaked.Dispose();
+            if (_blocked.IsCreated) _blocked.Dispose();
             if (_cost.IsCreated) _cost.Dispose();
             if (_costSnapshot.IsCreated) _costSnapshot.Dispose();
             if (_integration.IsCreated) _integration.Dispose();
@@ -437,7 +503,6 @@ namespace MiHordeTraffic.Pathing.FlowField
             if (_flowBack.IsCreated) _flowBack.Dispose();
             if (_height.IsCreated) _height.Dispose();
             if (_density.IsCreated) _density.Dispose();
-            if (_densityBack.IsCreated) _densityBack.Dispose();
             if (_heap.IsCreated) _heap.Dispose();
             if (_goalIndex.IsCreated) _goalIndex.Dispose();
 

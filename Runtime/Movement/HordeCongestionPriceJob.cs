@@ -18,20 +18,18 @@ namespace MiHordeTraffic.Movement
     /// Turns a frame of per cell measurements into how expensive each cell wants to be, and smooths its occupancy.
     /// </summary>
     [BurstCompile(FloatPrecision.Low, FloatMode.Fast)]
-    public struct HordeCongestionPriceJob : IJobParallelFor
+    public struct HordeCongestionPriceJob : IJobParallelForDefer
     {
 
         private const float MINIMUM_SPEED_FRACTION = .05f;
 
+        [ReadOnly] public NativeArray<int> Active;
         [ReadOnly] public NativeArray<byte> Walkable;
         [ReadOnly] public NativeArray<float> SpeedSum;
         [ReadOnly] public NativeArray<int> Counts;
         [ReadOnly] public NativeArray<int> Occupancy;
-        [ReadOnly] public NativeArray<float> DensityPrevious;
-
-        [WriteOnly] public NativeArray<float> Density;
-
-        public NativeArray<float> ReferenceSum;
+        [NativeDisableParallelForRestriction] public NativeArray<float> Density;
+        [NativeDisableParallelForRestriction] public NativeArray<float> ReferenceSum;
 
         public bool WriteCost;
         public float Rise;
@@ -41,29 +39,25 @@ namespace MiHordeTraffic.Movement
         public float ComfortableFill;
         public float JamFill;
 
-        public void Execute(int index)
+        public void Execute(int slot)
         {
-            /*
-             * Carried across rather than left alone, because the front and back buffers swap under this and a cell
-             * nothing writes would flicker between two frames of history every time they did.
-             */
-            if (Walkable[index] == 0)
-            {
-                Density[index] = DensityPrevious[index];
-                return;
-            }
+            int index = Active[slot];
 
             /*
              * Smoothed rather than taken raw, because a body straddling a cell boundary flickers between two cells
              * frame to frame and a raw count would have bodies stuttering as they crossed every line.
+             *
+             * Decayed for unwalkable cells too, unlike the price below it. Ground can stop being walkable under a
+             * crowd now that structures block cells at runtime, and a cell that never decays is one the prune can
+             * never retire, which would leak a row into the active set for every cell ever built on.
              */
-            float previous = DensityPrevious[index];
+            float previous = Density[index];
             int occupancy = Occupancy[index];
             float density = math.lerp(previous, occupancy, occupancy > previous ? Rise : Fall);
 
             Density[index] = density;
 
-            if (!WriteCost) return;
+            if (!WriteCost || Walkable[index] == 0) return;
 
             /*
              * An empty cell is worth one, not whatever it was last measured at. A jam that clears has to stop being
