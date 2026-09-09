@@ -96,6 +96,18 @@ namespace MiHordeTraffic.Pathing.FlowField
          */
         [SerializeField] private FlowDirectionMode directionMode = FlowDirectionMode.GRADIENT;
 
+        /*
+         * A centimetre, squared. Below it a goal has not moved, it is being described by a float.
+         */
+        private const float STATIONARY_EPSILON_SQUARED = .0001f;
+
+        /*
+         * Past this the expansion stops being something that fits in a frame. It is a soft line and it is meant to
+         * be: the number is here so the bake can say what the grid will cost before anyone profiles it, rather than
+         * to stop anyone building a big one.
+         */
+        private const int LARGE_GRID_CELLS = 250000;
+
         private readonly GridFlowField _field = new GridFlowField();
 
         private double _totalMilliseconds;
@@ -104,6 +116,8 @@ namespace MiHordeTraffic.Pathing.FlowField
         private float _sinceRebuild;
         private float3 _lastGoal;
         private bool _hasLastGoal;
+        private long _buildStart;
+        private bool _dirty = true;
 
         /// <summary>
         /// Whether something else is calling Rebuild, in which case the driver stops doing it on its own.
@@ -130,8 +144,14 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// </summary>
         public int TotalCells => _field.IsBaked ? _field.Grid.Count : 0;
 
+        /*
+         * Wall clock rather than main thread time, and the distinction matters now that the two are not the same
+         * number. The expansion runs on a worker across however many frames it needs, so what this measures is how
+         * long the field takes to arrive, which is how stale it is allowed to get. What it costs the frame is the
+         * Pathing.FlowField row of the phases table, and on any grid worth asking about that row is nearly zero.
+         */
         /// <summary>
-        /// Average expansion time across every rebuild so far, which is the number worth quoting.
+        /// Average time from an expansion being scheduled to it being promoted, which is the field's latency rather than its cost.
         /// </summary>
         public double AverageBuildMilliseconds => _builds == 0 ? 0d : _totalMilliseconds / _builds;
 
@@ -168,6 +188,12 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             ClearStats();
 
+            /*
+             * A fresh bake is a different grid, so whatever the field holds describes ground that may not be there
+             * any more and the next interval has to expand rather than decide nothing changed.
+             */
+            _dirty = true;
+
             Debug.Log($"[MiHordeTraffic] Baked {_field.Grid.Width}x{_field.Grid.Height} grid at {cellSize}m over {area.size.x:F0}x{area.size.z:F0} in {watch.Elapsed.TotalMilliseconds:F1} ms, {_field.WalkableCells} of {_field.Grid.Count} cells walkable ({_field.WalkableFraction:P0}).");
 
             /*
@@ -177,6 +203,44 @@ namespace MiHordeTraffic.Pathing.FlowField
              */
             if (_field.WalkableFraction < .5f)
                 Debug.LogWarning($"[MiHordeTraffic] Only {_field.WalkableFraction:P0} of the grid is walkable. The bounds are probably larger than the floor. Note the inspector shows Extent, which is half the size.", this);
+
+            WarnAboutGridSize(area);
+        }
+
+        /*
+         * Said at bake time because that is the only moment anyone is looking, and because the number that decides
+         * this is not one the inspector shows. Cell Size looks like a quality setting and behaves like a quadratic
+         * cost: a kilometre of map at one metre is a million cells, and doubling the cell size quarters everything
+         * downstream of it, the expansion, the memory and the bake itself.
+         *
+         * A warning rather than a clamp. A grid this size is a legitimate thing to want, it is just no longer
+         * something that finishes inside a frame, and since the expansion runs across frames now that is a choice
+         * rather than a fault. What it must not be is a surprise.
+         */
+        /// <summary>
+        /// Says how much the grid just baked is going to cost, and what cell size would bring it back down.
+        /// </summary>
+        /// <param name="area">The area the grid was baked over.</param>
+        private void WarnAboutGridSize(Bounds area)
+        {
+            int count = _field.Grid.Count;
+
+            if (count <= LARGE_GRID_CELLS) return;
+
+            /*
+             * Rounded up to a half metre, because a suggestion of 3.17 metres reads as a calculation rather than as
+             * a setting somebody should type in.
+             */
+            float suggested = cellSize * math.sqrt((float)count / LARGE_GRID_CELLS);
+            suggested = math.ceil(suggested * 2f) * .5f;
+
+            Debug.LogWarning(
+                $"[MiHordeTraffic] The grid is {_field.Grid.Width}x{_field.Grid.Height}, which is {count:N0} cells at {cellSize}m over {area.size.x:F0}x{area.size.z:F0}. " +
+                $"Expansion cost grows with the cell count, so this one runs across several frames rather than inside one. " +
+                $"That is handled, the rebuild is asynchronous and the crowd reads the previous field while it runs, but it also costs memory and bake time. " +
+                $"Cell Size {suggested}m would bring it to about {(int)(area.size.x / suggested) * (int)(area.size.z / suggested):N0} cells. " +
+                $"Keep the cell size at or below the width of the narrowest gap bodies have to path through.",
+                this);
         }
 
         /// <summary>
@@ -283,7 +347,33 @@ namespace MiHordeTraffic.Pathing.FlowField
 
         private void LateUpdate()
         {
-            if (!Driven) Rebuild(Time.deltaTime);
+            /*
+             * Polled here as well as inside Rebuild, because a driven driver has its Rebuild called from the path
+             * scheduler and a scheduler that goes away would otherwise leave the last expansion in flight for good.
+             */
+            if (Driven) TryPromoteBuild();
+            else Rebuild(Time.deltaTime);
+        }
+
+        /*
+         * Called by anything that changes what the expansion would produce, which the driver has no way to notice
+         * on its own: congestion writing new costs, or a game blocking ground when a building goes up.
+         */
+        /// <summary>
+        /// Says the field is out of date, so the next interval actually rebuilds it rather than skipping.
+        /// </summary>
+        public void MarkDirty() => _dirty = true;
+
+        /*
+         * Promoted when it happens to be finished rather than waited for. The main thread's share of an expansion
+         * is now the swap at the end of it, whatever the grid costs to expand.
+         */
+        private void TryPromoteBuild()
+        {
+            if (!_field.TryComplete()) return;
+
+            _totalMilliseconds += (Stopwatch.GetTimestamp() - _buildStart) * 1000d / Stopwatch.Frequency;
+            _builds++;
         }
 
         /*
@@ -299,6 +389,8 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <returns>True when the field was rebuilt this call.</returns>
         public bool Rebuild(float deltaTime)
         {
+            TryPromoteBuild();
+
             if (!target || !_field.IsBaked) return false;
 
             _countdown -= deltaTime;
@@ -317,19 +409,35 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             if (!due && !moved) return false;
 
+            /*
+             * The interval is a ceiling on how stale the field may be, not an instruction to recompute it. An
+             * expansion from an unmoved goal across unchanged costs produces the field that is already there, cell
+             * for cell, so running one is work with no result. On a static target with congestion off that is every
+             * rebuild the driver would ever do, which on a large grid is the whole cost of the system spent on
+             * arriving back where it started.
+             *
+             * Any movement counts here rather than the rebuild distance, because the distance test above is about
+             * redrawing early and this is about whether there is anything to redraw at all. The epsilon is there so
+             * a target parented to something that jitters in the last decimal place does not read as movement.
+             */
+            if (!_dirty
+                && _field.IsBuilt
+                && _hasLastGoal
+                && math.distancesq(goal.xz, _lastGoal.xz) <= STATIONARY_EPSILON_SQUARED)
+            {
+                _countdown = rebuildInterval;
+                return false;
+            }
+
             _countdown = rebuildInterval;
             _sinceRebuild = 0f;
             _lastGoal = goal;
             _hasLastGoal = true;
 
-            long start = Stopwatch.GetTimestamp();
-
             if (!_field.Schedule(goal, directionMode)) return false;
 
-            _field.Complete();
-
-            _totalMilliseconds += (Stopwatch.GetTimestamp() - start) * 1000d / Stopwatch.Frequency;
-            _builds++;
+            _dirty = false;
+            _buildStart = Stopwatch.GetTimestamp();
 
             return true;
         }

@@ -40,6 +40,12 @@ namespace MiHordeTraffic.Movement
         private const int MINIMUM_CAPACITY = 64;
         private const float HEXAGONAL_PACKING = .866f;
 
+        /*
+         * Large because every one of these passes is a handful of arithmetic over contiguous memory, so the batch
+         * has to be big enough that scheduling a batch costs less than running one.
+         */
+        private const int CONGESTION_BATCH = 1024;
+
         private static readonly ProfilerMarker GATHER_MARKER = new ProfilerMarker("MiHordeTraffic.Movement.Gather");
         private static readonly ProfilerMarker MOVE_MARKER = new ProfilerMarker("MiHordeTraffic.Movement.Move");
         /*
@@ -207,6 +213,7 @@ namespace MiHordeTraffic.Movement
 
         private JobHandle _handle;
         private bool _scheduled;
+        private bool _congestionScheduled;
         private int _capacity;
 
         /// <summary>
@@ -719,40 +726,95 @@ namespace MiHordeTraffic.Movement
         {
             if (!congestionEnabled && !slowInCrowds) return default;
 
+            /*
+             * Told rather than inferred, because the driver skips an expansion when nothing about it would change
+             * and it cannot see the cost array being rewritten from here. Only congestion counts: the crowd slowing
+             * reads Density, which the expansion does not, so a crowd that only slows itself changes nothing the
+             * field would draw differently.
+             */
+            if (congestionEnabled && driver) driver.MarkDirty();
+
             EnsureCongestionCapacity(field.Grid.Count);
 
-            JobHandle handle = new HordeCongestionJob
+            int cells = field.Grid.Count;
+            float rise = math.saturate(riseSmoothing * step);
+            float fall = math.saturate(fallSmoothing * step);
+
+            /*
+             * Four jobs where there was one, and three of them run on every worker. Only the gather is proportional
+             * to the crowd; the other three are proportional to the grid, and on a kilometre of map at one metre
+             * that was fifteen million memory bound operations on a single thread with the mover waiting on all of
+             * it. The profiler read as the movement job costing forty milliseconds when the movement job itself
+             * costs three tenths of one: what it was doing was queueing behind this.
+             */
+            JobHandle clear = new HordeCongestionClearJob
+            {
+                SpeedSum = _speedSum,
+                ReferenceSum = _referenceSum,
+                Counts = _counts,
+                Occupancy = _occupancy
+            }
+            .Schedule(cells, CONGESTION_BATCH);
+
+            JobHandle gather = new HordeCongestionGatherJob
             {
                 Grid = field.Grid,
                 Positions = _positions,
                 Previous = _previousPositions,
-                Walkable = field.Walkable,
                 Flow = field.Flow,
                 Reference = _reference,
                 Progress = _progress,
-                Cost = field.Cost,
-                Density = field.Density,
-                WriteCost = congestionEnabled,
                 SpeedSum = _speedSum,
                 ReferenceSum = _referenceSum,
                 Counts = _counts,
                 Occupancy = _occupancy,
                 BodyCount = _bodies.Count,
-                BlurRadius = costBlurRadius,
                 DeltaTime = step,
                 ProgressSmoothing = progressSmoothing,
-                MaximumCost = maximumCost,
-                RiseSmoothing = riseSmoothing,
-                FallSmoothing = fallSmoothing,
                 Goal = driver.Target ? (float3)driver.Target.position : float3.zero,
-                ArriveRadiusSquared = arriveRadius * arriveRadius,
+                ArriveRadiusSquared = arriveRadius * arriveRadius
+            }
+            .Schedule(clear);
+
+            JobHandle handle = new HordeCongestionPriceJob
+            {
+                Walkable = field.Walkable,
+                SpeedSum = _speedSum,
+                Counts = _counts,
+                Occupancy = _occupancy,
+                DensityPrevious = field.Density,
+                Density = field.DensityBack,
+                ReferenceSum = _referenceSum,
+                WriteCost = congestionEnabled,
+                Rise = rise,
+                Fall = fall,
+                MaximumCost = maximumCost,
                 CellCapacity = _cellCapacity,
                 ComfortableFill = comfortableFill,
                 JamFill = jamFill
             }
-            .Schedule();
+            .Schedule(cells, CONGESTION_BATCH, gather);
+
+            /*
+             * Only run when congestion is actually writing costs. It is the heaviest of the four, since it samples
+             * a whole kernel per cell, and with congestion off there is nothing for it to spread.
+             */
+            if (congestionEnabled)
+                handle = new HordeCongestionSpreadJob
+                {
+                    Grid = field.Grid,
+                    Walkable = field.Walkable,
+                    Targets = _referenceSum,
+                    Cost = field.Cost,
+                    BlurRadius = costBlurRadius,
+                    Rise = rise,
+                    Fall = fall
+                }
+                .Schedule(cells, CONGESTION_BATCH, handle);
 
             (_positions, _previousPositions) = (_previousPositions, _positions);
+
+            _congestionScheduled = true;
 
             return handle;
         }
@@ -830,6 +892,19 @@ namespace MiHordeTraffic.Movement
                 _handle.Complete();
 
             _scheduled = false;
+
+            /*
+             * Promoted here rather than where it was written, because this is the one point in the frame where the
+             * congestion pass is known to be finished and nothing is reading the buffer it wrote into.
+             */
+            if (_congestionScheduled)
+            {
+                _congestionScheduled = false;
+
+                GridFlowField field = driver ? driver.Field : null;
+
+                field?.SwapDensity();
+            }
 
             using (PUBLISH_MARKER.Auto())
                 PublishStopped();

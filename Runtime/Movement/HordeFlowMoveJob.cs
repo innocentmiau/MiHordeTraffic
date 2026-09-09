@@ -392,6 +392,12 @@ namespace MiHordeTraffic.Movement
             float steering = 0f;
 
             /*
+             * Turning without walking, which is what a body that has arrived does when the thing it arrived at
+             * moves around it. Kept apart from steering because steering is a speed and this is a permission.
+             */
+            bool turning = false;
+
+            /*
              * Taken out before the clears below, because both are last frame's value and both are read again inside
              * the branch that walks a route. Clearing the slot first and reading the array afterwards is the same
              * slot, so the read came back zero every frame and took two mechanisms down with it.
@@ -429,13 +435,49 @@ namespace MiHordeTraffic.Movement
             {
                 float2 flow = Flow[cell];
 
-                if (!flow.Equals(float2.zero))
+                /*
+                 * Steered at the goal itself rather than by the field once a body is closing on it, because the
+                 * field has no answer finer than a cell and no answer at all in the cell the goal is standing in.
+                 * That cell integrates to zero, so nothing around it is cheaper, and both direction modes hand back
+                 * a zero vector for it. A body standing there was skipping this whole block: it never updated its
+                 * heading and never turned again, whatever the target did.
+                 *
+                 * Outside that cell it is a resolution problem rather than a hole. Every body in a cell reads one
+                 * direction, and it points at the neighbouring cell rather than at the target, so a target moving
+                 * about inside its own cell changes nothing any body can see and the crowd only reacts when it
+                 * crosses a boundary. At two and a half metres that is a two and a half metre dead zone around
+                 * whatever the crowd is chasing, which is exactly where being wrong is most visible.
+                 *
+                 * Blended across the arrive taper rather than switched at a line, so there is no distance at which
+                 * a body's heading jumps between two sources that disagree. The exact goal is already here, it is
+                 * what the distance and the arrival test are measured against, so this costs a lerp.
+                 *
+                 * Only near the goal on purpose. Far away the direct vector is not a route, it points through
+                 * whatever walls are in the way, and the field is the thing that knows better.
+                 */
+                float2 steer = flow;
+
+                if (approach < 1f)
                 {
-                    float2 heading = TurnTowards(Heading[index], flow);
+                    float2 direct = math.normalizesafe(Goal.xz - position.xz, flow);
+
+                    steer = math.normalizesafe(math.lerp(flow, direct, 1f - approach), flow);
+                }
+
+                if (!steer.Equals(float2.zero))
+                {
+                    float2 heading = TurnTowards(Heading[index], steer);
 
                     Heading[index] = heading;
 
-                    float open = Speed[index] * approach * FacingFactor(heading, flow);
+                    /*
+                     * A body that has arrived is asked for no speed at all, so it would fall through the rotation
+                     * test at the bottom and hold whatever way it was last facing. Standing in a ring around a
+                     * target and not turning as it moves around them is the same bug seen from the other side.
+                     */
+                    turning = arrived;
+
+                    float open = Speed[index] * approach * FacingFactor(heading, steer);
 
                     /*
                      * Ramped rather than taken flat, so a body that has only just set off is not measured against a
@@ -592,7 +634,7 @@ namespace MiHordeTraffic.Movement
              * body with nothing to steer towards holds the rotation it has, which is what a person who has stopped
              * walking does.
              */
-            if (steering <= STEERING_EPSILON) return;
+            if (steering <= STEERING_EPSILON && !turning) return;
 
             float2 aim = Heading[index];
 

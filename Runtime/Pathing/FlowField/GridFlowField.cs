@@ -36,6 +36,34 @@ namespace MiHordeTraffic.Pathing.FlowField
         private NativeList<GridFlowFieldBuildJob.HeapEntry> _heap;
         private NativeArray<int> _goalIndex;
 
+        /*
+         * The expansion writes into these and they are swapped with the live pair once it finishes, which is what
+         * lets it run for as many frames as it needs.
+         *
+         * Joining on the spot was fine while a grid was small enough for the whole expansion to fit inside a frame,
+         * and stops being fine the moment it is not: a million cell grid is most of a fifth of a second, and paying
+         * that on the main thread is a hitch every rebuild interval. Leaving it in flight instead means the bodies
+         * need something consistent to read in the meantime, and the only thing that is is the field as it was
+         * before. Writing into the live arrays across a frame boundary would have a crowd steering off an
+         * expansion that has reached half of the map.
+         *
+         * Cost is copied rather than shared, for the same reason from the other side. Congestion rewrites it every
+         * frame from the mover, so an expansion still reading it two frames later would be reading a buffer being
+         * changed underneath it. The copy is one memcpy at schedule time against a race that is otherwise real.
+         */
+        private NativeArray<float> _integrationBack;
+        private NativeArray<float2> _flowBack;
+        private NativeArray<float> _costSnapshot;
+
+        /*
+         * Density is double buffered for a different reason from the two above. The congestion pass reads the
+         * previous frame's smoothed occupancy and writes this frame's, and the movement job reads it at the same
+         * time to decide how much to ease off for the crowd ahead. One array cannot be all three of those things
+         * at once, and the movement job reading a value halfway through being rewritten is a body slowing down for
+         * a cell that is being measured rather than for one that is full.
+         */
+        private NativeArray<float> _densityBack;
+
 #if UNITY_EDITOR
         /*
          * Baking is on a context menu, which means it can be run in edit mode, which means these buffers can exist
@@ -151,10 +179,14 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             _walkable = new NativeArray<byte>(count, Allocator.Persistent);
             _cost = new NativeArray<float>(count, Allocator.Persistent);
+            _costSnapshot = new NativeArray<float>(count, Allocator.Persistent);
             _integration = new NativeArray<float>(count, Allocator.Persistent);
+            _integrationBack = new NativeArray<float>(count, Allocator.Persistent);
             _flow = new NativeArray<float2>(count, Allocator.Persistent);
+            _flowBack = new NativeArray<float2>(count, Allocator.Persistent);
             _height = new NativeArray<float>(count, Allocator.Persistent);
             _density = new NativeArray<float>(count, Allocator.Persistent);
+            _densityBack = new NativeArray<float>(count, Allocator.Persistent);
             _heap = new NativeList<GridFlowFieldBuildJob.HeapEntry>(math.max(count / 4, 64), Allocator.Persistent);
             _goalIndex = new NativeArray<int>(1, Allocator.Persistent);
 
@@ -255,12 +287,14 @@ namespace MiHordeTraffic.Pathing.FlowField
         {
             if (_scheduled || !IsBaked) return false;
 
+            NativeArray<float>.Copy(_cost, _costSnapshot, _cost.Length);
+
             JobHandle build = new GridFlowFieldBuildJob
             {
                 Grid = Grid,
                 Walkable = _walkable,
-                Cost = _cost,
-                Integration = _integration,
+                Cost = _costSnapshot,
+                Integration = _integrationBack,
                 Heap = _heap,
                 GoalIndex = _goalIndex,
                 Goal = goal,
@@ -272,18 +306,52 @@ namespace MiHordeTraffic.Pathing.FlowField
             {
                 Grid = Grid,
                 Walkable = _walkable,
-                Integration = _integration,
+                Integration = _integrationBack,
                 Mode = mode,
-                Flow = _flow
+                Flow = _flowBack
             }
             .Schedule(Grid.Count, 64, build);
 
             _scheduled = true;
+            JobHandle.ScheduleBatchedJobs();
             return true;
         }
 
         /// <summary>
-        /// Joins an outstanding expansion, if there is one.
+        /// Whether an expansion is in flight, so nothing else may be scheduled and its result is not readable yet.
+        /// </summary>
+        public bool HasPendingBuild => _scheduled;
+
+        /// <summary>
+        /// The buffer the congestion pass writes this frame's smoothed occupancy into, which is not the one bodies read.
+        /// </summary>
+        public NativeArray<float> DensityBack => _densityBack;
+
+        /// <summary>
+        /// Promotes what the congestion pass just wrote to being what bodies read. Only ever called with no job in flight.
+        /// </summary>
+        public void SwapDensity() => (_density, _densityBack) = (_densityBack, _density);
+
+        /*
+         * Asked rather than waited on, which is the whole difference between a grid that can be a kilometre across
+         * and one that cannot. Nothing needs this expansion to land on any particular frame: the rebuild interval
+         * already says the field is allowed to be a quarter of a second out of date, and an expansion that takes
+         * three frames is inside that budget while a main thread that waits three frames for it is not.
+         */
+        /// <summary>
+        /// Promotes an expansion that has already finished on its own, without ever waiting for one that has not.
+        /// </summary>
+        /// <returns>True when an expansion was promoted this call.</returns>
+        public bool TryComplete()
+        {
+            if (!_scheduled || !_handle.IsCompleted) return false;
+
+            Complete();
+            return true;
+        }
+
+        /// <summary>
+        /// Joins an outstanding expansion, if there is one, waiting for it if it has not finished.
         /// </summary>
         public void Complete()
         {
@@ -293,6 +361,14 @@ namespace MiHordeTraffic.Pathing.FlowField
                 _handle.Complete();
 
             _scheduled = false;
+
+            /*
+             * Swapped rather than copied. What the jobs wrote becomes what everything reads from this moment on,
+             * and what everything was reading becomes the scratch the next expansion writes into.
+             */
+            (_integration, _integrationBack) = (_integrationBack, _integration);
+            (_flow, _flowBack) = (_flowBack, _flow);
+
             IsBuilt = _goalIndex[0] >= 0;
         }
 
@@ -354,10 +430,14 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             if (_walkable.IsCreated) _walkable.Dispose();
             if (_cost.IsCreated) _cost.Dispose();
+            if (_costSnapshot.IsCreated) _costSnapshot.Dispose();
             if (_integration.IsCreated) _integration.Dispose();
+            if (_integrationBack.IsCreated) _integrationBack.Dispose();
             if (_flow.IsCreated) _flow.Dispose();
+            if (_flowBack.IsCreated) _flowBack.Dispose();
             if (_height.IsCreated) _height.Dispose();
             if (_density.IsCreated) _density.Dispose();
+            if (_densityBack.IsCreated) _densityBack.Dispose();
             if (_heap.IsCreated) _heap.Dispose();
             if (_goalIndex.IsCreated) _goalIndex.Dispose();
 
