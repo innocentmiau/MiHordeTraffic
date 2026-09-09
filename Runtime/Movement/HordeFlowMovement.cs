@@ -73,6 +73,12 @@ namespace MiHordeTraffic.Movement
         /// </summary>
         public static HordeFlowMovement Instance => _instance;
 
+        /// <summary>
+        /// How many bodies of the crowd's average size fit in one cell once they have stopped pushing, which is
+        /// what a cell's smoothed density has to be measured against to mean anything.
+        /// </summary>
+        public float CellCapacity => _cellCapacity;
+
         [SerializeField] private HordeFlowFieldDriver driver;
 
         /*

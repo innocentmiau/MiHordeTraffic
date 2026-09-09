@@ -421,6 +421,13 @@ namespace MiHordeTraffic.Movement
             _wantsToMove = true;
             _hasGoal = false;
             _frozen = false;
+
+            /*
+             * Cleared with the rest, and it was not. The mover feeds this straight into velocity on a body's first
+             * frame, so one that was being shoved when it died came back out of the pool still being shoved by a
+             * crowd it is no longer standing in, and set off sideways before separation had looked at it once.
+             */
+            _lastPush = float3.zero;
         }
 
         /*

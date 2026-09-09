@@ -375,13 +375,29 @@ namespace MiHordeTraffic.Pathing
             float deltaTime = Time.deltaTime;
             int remaining = repathsPerFrame;
 
-            using (TICK_MARKER.Auto())
-            {
-                for (int i = 0; i < count; i++)
-                    _bodies[i].TickBody(deltaTime);
-            }
-
+            /*
+             * Moved above the tick, so a body is ticked under the technique that is driving it this frame rather
+             * than the one that was driving it last frame. It also has to happen first for the skip below to be
+             * asking about anything at all.
+             */
             SyncTechnique();
+
+            /*
+             * Skipped whole rather than per body. Every implementation of TickBody stands itself down while the
+             * mover is holding its body, so under the flow field this was five thousand interface dispatches a
+             * frame to be told there was nothing to do, and the dispatch is the entire cost: there is nothing on
+             * the other side of it.
+             *
+             * Asked of the technique rather than of the movement mode, because the technique is what decides
+             * whether anything on this roster is being paced at all, and it is swapped a line above so a change at
+             * runtime takes effect on the same frame it is made.
+             */
+            if (_active.RepathsBodies)
+                using (TICK_MARKER.Auto())
+                {
+                    for (int i = 0; i < count; i++)
+                        _bodies[i].TickBody(deltaTime);
+                }
 
             /*
              * PrepareFrame is inside the timed region along with the per body passes. A flow field does nearly all
