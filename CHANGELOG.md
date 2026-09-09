@@ -5,6 +5,56 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0]
+
+### Upgrading
+
+The field expansion no longer happens on the main thread. It is scheduled, runs across however many frames it needs, and is promoted when it finishes, so the crowd reads the previous field while the next one is built. Nothing has to change for that, but two things read differently because of it: `AverageBuildMilliseconds` is now how long an expansion takes to arrive rather than what it cost the frame, and the `Pathing.FlowField` row of the phases table, which is what it costs the frame, should be close to zero.
+
+A field whose goal has not moved and whose costs have not changed is no longer expanded at all. On a static target with congestion off that is every rebuild the driver would ever do. Anything changing the grid from outside has to say so with `MarkDirty`, which the obstacles below do for you.
+
+Bodies close to the goal steer at the goal itself rather than by the direction stored in the cell they stand in, and bodies that have arrived now turn to follow a target moving around them.
+
+### Added
+
+- **`HordeObstacle`**, which takes the ground under it out of the grid while it is enabled and gives it back when it is not, so a building can be put down without re-baking anything. Blocking is an overlay on the bake rather than an edit of it, held as a count per cell, so overlapping footprints and demolition both come out right. It has no Update and no per frame cost of any kind.
+
+- **`HordeMovingObstacle`**, deliberately a separate component so a wall that will never move keeps costing nothing. It rechecks its footprint a few times a second rather than every frame, skips entirely when it still covers the same cells, and by default asks for no expansion at all: bodies cannot walk into it because every step is tested against walkability, they are simply not steered around it. **Update Routing** turns that on for something large enough that sliding along it does not get a body past.
+
+- **`HordeSpawn.TryFind(position, maximumDistance, out spawn)`**, which answers where a body can actually be put down: on the grid, reachable, and not already packed, nearest first, returned on the ground and scattered inside its cell so a wave does not stack on one spot. Sampling the navmesh from outside the package does not answer this, because the bake erodes for clearance and rejects ground the navmesh is perfectly happy with.
+
+- **The worst frames of a run** in the session report, each with the phase breakdown of that frame rather than an average. A single spike of a tenth of a second across a couple of thousand frames moves every row of the averages by four hundredths of a millisecond, which means the report you would go to looking for it is the one report guaranteed not to show it. Set by **Worst Frames Tracked** on the scheduler, four by default, zero to switch it off. It records nothing unless a frame turns out to be among the slowest, and allocates nothing at all.
+
+- A **bake warning** naming the cell count and suggesting a cell size when a grid is large enough for the expansion to run across several frames. Cell Size looks like a quality setting and behaves like a quadratic cost, and that is not something anyone should have to find out with a profiler.
+
+- `HordeFlowFieldDriver.BlockArea`, `UnblockArea` and `MarkDirty`, and `HordeFlowMovement.CellCapacity`.
+
+### Changed
+
+- **The expansion is asynchronous.** It writes into back buffers and swaps them in when it finishes, which is what lets it take as long as it needs. A million cell grid is most of a fifth of a second, and paying that on the main thread was a hitch every rebuild interval; leaving it in flight instead needs the crowd to have something consistent to read in the meantime, and the only thing that is is the field as it was before. The cost array is copied at schedule time for the same reason from the other side, since congestion rewrites it every frame.
+
+- **The congestion pass runs over the cells the crowd is standing in rather than over the grid.** It was four passes on one thread, three of them proportional to the map: a kilometre at one metre was fifteen million memory bound operations a frame, with the mover waiting on all of it. It is four jobs now, three of them on every worker, walking an active set that cells join when a body arrives and leave once their density has decayed back to empty. Five thousand bodies stand in at most five thousand cells, so what this costs stopped depending on how big the map is.
+
+- Parallel jobs sized from the machine rather than by a constant, through `HordeJobBatch`. The direction job ran at sixty four cells a batch, which is two and a half thousand dispatches on a large grid and a job that spends much of its life handing out work while everything queued behind it waits for a worker.
+
+- The scheduler skips its whole per body tick when the active technique does not repath bodies, rather than dispatching to five thousand implementations that stand themselves down on their first line.
+
+- Turning is a rotation rather than three arctangents, a sine and a cosine per body per frame. The limit is a rate times the step and therefore the same for every body, so its sine and cosine are worked out once when the job is scheduled.
+
+- A rotation is not written when the body is already facing where it wants to. The saving is the write rather than the arithmetic: Unity's transform system does its work for transforms that changed.
+
+### Fixed
+
+- **A crowd walked through walls whenever the route to the goal was cut.** Standing on ground the grid describes and being able to reach the goal from it were the same flag, and only the first of those earns a body the right to move wherever it likes. That right exists for a body the grid cannot describe at all, spawned off the mesh or on a corner the erosion took, because refusing its steps is what stranded it. A body behind a shut gate is in the opposite situation, and was handed the same exemption.
+
+- **Bodies stopped turning within a cell of the goal.** The goal's own cell integrates to zero, so nothing around it is cheaper and both direction modes hand back a zero vector for it, which the movement job read as having nothing to say and skipped the whole steering block on. A body standing there never updated its heading again whatever the target did. Outside that cell it was the same problem at cell resolution: every body in a cell reads one direction, pointing at the neighbouring cell rather than at the target, so a target moving inside its own cell changed nothing anyone could see. Steering blends to the goal itself across the arrive taper now, and a body that has arrived is allowed to turn without walking.
+
+- The recovery search demanded a route as well as ground to stand on, so a body inside a structure that closed on top of it in a sealed region found nothing, fell back to walking at the goal, and was permitted to do that through everything in the way. It asks for footing now and prefers a route.
+
+- A block or unblock queued before the grid was baked was cleared along with the rest of the queue rather than kept, so an obstacle in a scene that bakes on start looked configured and blocked nothing for the session.
+
+- A pooled body came back still holding the separation push it had when it was despawned, which the mover feeds straight into velocity, so it set off sideways on its first frame before separation had looked at it once.
+
 ## [0.2.0]
 
 ### Upgrading

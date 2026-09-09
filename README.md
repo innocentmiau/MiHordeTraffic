@@ -24,6 +24,7 @@ Youtube video showing the project and difference with Unity's way: https://www.y
 ## Features
 
 - **Flow field pathfinding.** One Dijkstra expansion outward from the goal, every body reads the cell it stands in. No per body path, no repath budget, no path recalculation when the target moves.
+- **Obstacles at runtime.** A building put down mid game takes the ground under it out of the grid and gives it back when it comes down, without re-baking the navmesh or the grid. Bodies stop walking into it on the very next frame, and route around it on the next expansion.
 - **Congestion aware routing.** Each cell is priced by how fast bodies actually cross it. A jammed bridge costs more to walk through, so an alternative wins the moment it is genuinely cheaper, and the whole crowd gets the same answer on the same frame.
 - **Reactive separation.** Jobified, Burst compiled, spatial hashed. Replaces the built in local avoidance.
 - **Crowd slowing.** Bodies ease off approaching a full cell, which turns a pile up into a queue.
@@ -210,6 +211,50 @@ There is no knob for how slow counts as stuck. It is derived from `settledDriveS
 
 ---
 
+## Obstacles
+
+Put `HordeObstacle` on anything the crowd has to walk around. It takes the cells under it out of the grid while it is enabled and gives them back when it is not, so a building can go up and come down without re-baking anything. It has no `Update` and no per frame cost at all.
+
+Blocking is an overlay on what the bake found rather than an edit of it, held as a count per cell. Two structures sharing a cell, or one landing inside another's clearance margin, both have to be gone before the ground comes back. Removing a building can never open ground the bake never offered.
+
+The footprint is taken from a `Collider` if the size is left at zero, and it is grown by `edgeClearance` the same way the bake erodes around walls, so **the blocked area is larger than the object**. On a 2.5 m grid a 2 m tower can take a 3x3 block of cells. Turn on the flow field gizmos to see what was actually blocked, which is a common source of "why is it behaving oddly there".
+
+Two speeds of effect, and they are worth telling apart:
+
+- **Walking into it stops immediately.** Every step is tested against walkability, so from the frame the cells go, nobody enters.
+- **Routing around it waits for the next expansion**, which is up to `rebuildInterval` plus the expansion itself. Until then bodies still aim through it, are refused at its face, and slide along it.
+
+### Moving obstacles
+
+`HordeMovingObstacle` is a separate component on purpose, so a wall that will never move keeps costing nothing. It rechecks its footprint a few times a second rather than every frame, and skips entirely when it still covers the same cells, since a grid cannot tell apart two positions that round to the same cell rectangle.
+
+What a move costs is not the cell writes. It is that every move makes the field out of date, and an expansion on a large grid is tens of milliseconds of worker time. A cart at sixty updates a second would ask for sixty expansions a second and get nothing for it, because the crowd cannot react faster than the rebuild interval anyway.
+
+So **Update Routing is off by default**. Bodies still cannot walk into it; they are simply not steered around it, which reads correctly for anything small enough that sliding along it gets a body past. Turn it on for something large enough that getting past it needs a route.
+
+### Gates
+
+A gate that seals the only way through works, and it is worth knowing what the crowd does. Everything behind it becomes unreachable, so bodies aim at the goal, are refused at the gate, and queue against it. The stall detector then notices nobody is making progress and settling spreads back through the queue so they stop shoving.
+
+What they will not do is gather **at the gate** specifically. The field cannot express "closed" as opposed to "not there", so there is no route leading to the door and bodies press against whatever wall lies between them and the goal instead.
+
+## Spawning
+
+```csharp
+if (HordeSpawn.TryFind(wanted, 5f, out Vector3 spawn))
+    pool.Spawn(spawn, rotation);
+```
+
+Answers where a body can actually stand: on the grid, reachable, and not already packed, nearest first, within the distance given. It returns a point on the ground, scattered inside its cell so a wave does not stack on one spot.
+
+Sampling the navmesh yourself does not answer this. The bake erodes for clearance, so ground the navmesh is happy with is not always ground this system will walk on, and a body put down on a cell the grid rejects starts off the described map and visibly wanders out to real ground before it sets off.
+
+Reachability is part of the question rather than an extra: a cell can be walkable and cut off, and a body spawned on one has nowhere to go from the moment it arrives.
+
+An overload takes how full a cell may already be, as a fraction of what it holds at rest. That reads the smoothed density, which lags by design, so several spawns inside one frame all see it as it was before any of them landed and can pick the same cell. The scatter keeps them from stacking exactly and separation sorts out the rest, but it is not a reservation.
+
+A spawned body needs `HordeAgent` and nothing else. It registers itself, and no `NavMeshAgent` is required under flow movement.
+
 ## Numbers with units
 
 These stay as plain numbers because they describe themselves and depend on your map.
@@ -255,6 +300,14 @@ It is a separate component so it can be removed. Drawing tens of thousands of ce
 A ready made slider component is not shipped here, because the only interesting version of one reads the keyboard and that would make the Input System a hard dependency of a crowd package. It is a dozen lines: set `Time.timeScale`, scale `Time.fixedDeltaTime` with it, and put it back to 1 in `OnDisable` so a session that ended at eight times speed does not leave the next one starting there.
 
 ---
+
+### The worst frames, not the average
+
+An average cannot show you a spike. One frame of a tenth of a second across a couple of thousand moves every row of the phases table by four hundredths of a millisecond, so the report you would go to looking for it is the one report guaranteed not to show it.
+
+**Worst Frames Tracked** on the scheduler keeps the slowest few frames of a run with the phase breakdown of each, and prints them under the averages. Four is enough to tell a recurring shape from a one off: four spikes with the same row lit up is a cause, four with four different rows is the editor, or the GPU, or the collector, and the answer is that it is not this. It says so outright when the package accounted for less than half the frame.
+
+It records nothing unless a frame turns out to be among the slowest already kept, which almost every frame fails, and it allocates nothing at all, since a diagnostic that produces garbage lands the collection inside the frames it is measuring.
 
 ## Roadmap
 
