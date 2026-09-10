@@ -83,35 +83,63 @@ namespace MiHordeTraffic.Pathing.FlowField
         {
             float centre = integration[index];
 
-            float left = Sample(grid, walkable, integration, cell + new int2(-1, 0), centre);
-            float right = Sample(grid, walkable, integration, cell + new int2(1, 0), centre);
-            float down = Sample(grid, walkable, integration, cell + new int2(0, -1), centre);
-            float up = Sample(grid, walkable, integration, cell + new int2(0, 1), centre);
+            bool leftOpen = TrySample(grid, walkable, integration, cell + new int2(-1, 0), centre, out float left);
+            bool rightOpen = TrySample(grid, walkable, integration, cell + new int2(1, 0), centre, out float right);
+            bool downOpen = TrySample(grid, walkable, integration, cell + new int2(0, -1), centre, out float down);
+            bool upOpen = TrySample(grid, walkable, integration, cell + new int2(0, 1), centre, out float up);
 
             /*
              * Downhill, so the cheaper side wins and the vector points at the goal rather than away from it.
              */
-            float2 gradient = new float2(left - right, down - up);
+            float x = left - right;
+            float z = down - up;
 
-            return math.normalizesafe(gradient, Neighbour(grid, walkable, integration, index, cell));
+            /*
+             * A blocked side is allowed to flatten its axis and never to win it. Standing in for it with the
+             * centre's own cost makes the arithmetic say the wall is exactly as expensive as here, which is fine
+             * while the open side is downhill and a lie the moment it is not: an uphill neighbour on one side and a
+             * wall on the other reads as the wall being the cheaper way, and the vector points into it.
+             *
+             * That is not a corner case, it is what a congested route does. Cost rises on the ground the crowd is
+             * actually using, so the open side gets steeper, and every cell along a wall beside a busy route starts
+             * aiming at the wall. It shows up as bodies peeling off towards a blocked way, being refused at its
+             * face, and drifting back, over and over, and it gets worse the busier the route gets.
+             *
+             * Clamping per axis keeps what the substitution was for. A wall still does not push bodies away from
+             * itself, so a crowd walking along one keeps hugging it; it just cannot pull them in.
+             */
+            if (!rightOpen) x = math.min(x, 0f);
+            if (!leftOpen) x = math.max(x, 0f);
+            if (!upOpen) z = math.min(z, 0f);
+            if (!downOpen) z = math.max(z, 0f);
+
+            return math.normalizesafe(new float2(x, z), Neighbour(grid, walkable, integration, index, cell));
         }
 
         /*
          * A neighbour that is off the grid, unwalkable or unreached contributes the centre's own cost, which makes
          * that side of the slope flat. Substituting a large value instead would turn every wall into a hill the
          * field pushes bodies down, and every crowd would peel away from walls it should be walking along.
+         *
+         * Whether it was a real reading is handed back as well, because flat is only half of what a wall means and
+         * the caller needs the other half: it may not be steered into either.
          */
-        private static float Sample(HordeGridInfo grid, NativeArray<byte> walkable, NativeArray<float> integration, int2 cell, float fallback)
+        private static bool TrySample(HordeGridInfo grid, NativeArray<byte> walkable, NativeArray<float> integration, int2 cell, float fallback, out float cost)
         {
-            if (!grid.Contains(cell)) return fallback;
+            cost = fallback;
+
+            if (!grid.Contains(cell)) return false;
 
             int index = grid.IndexOf(cell);
 
-            if (walkable[index] == 0) return fallback;
+            if (walkable[index] == 0) return false;
 
-            float cost = integration[index];
+            float reading = integration[index];
 
-            return cost == float.MaxValue ? fallback : cost;
+            if (reading == float.MaxValue) return false;
+
+            cost = reading;
+            return true;
         }
 
     }

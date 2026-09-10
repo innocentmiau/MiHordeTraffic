@@ -5,6 +5,26 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0]
+
+### Upgrading
+
+The grid no longer grows past the edge of the navmesh, which means it covers less ground than it did and covers the right ground. Re-bake and expect **WalkableCells to fall**, by roughly whatever part of a cell was hanging off the navmesh at every edge in the level.
+
+A corridor that was only a cell or two wide may lose its middle to that, because it was only ever wide enough with the invented ground included. The answer there is a smaller cell size, not a looser tolerance: a looser tolerance does not recover a corridor that is genuinely too narrow, it fabricates one. **Sample Accuracy** is on the driver if you need the old behaviour, and zero is exactly it.
+
+Bodies standing on cells that stop being walkable take the recovery path on the first frame after the bake and walk themselves out to real ground, which reads as a one off shuffle along walls.
+
+### Added
+
+- **Sample Accuracy** on `HordeFlowFieldDriver`, from zero to one, deciding how closely a cell has to sit on the navmesh to be baked as walkable. One is on it or not; zero is the half cell of slack this had before. The bake log reports which was used.
+
+### Fixed
+
+- **The grid invented walkable ground around every obstacle in the level, and bodies stood inside walls on it.** The bake asks the navmesh for the nearest surface to each cell centre, and that call answers however far away it has to look: a cell centre buried in a wall finds the navmesh at the wall's foot and reports a hit. Measured against half a cell that hit was accepted, so a strip of ground half a cell wide appeared around everything solid, with its height taken from the edge it found. The question is whether a cell is on the navmesh, not whether the navmesh is near it, and those differ by exactly the amount that puts a body inside a wall.
+
+- **The flow field pulled bodies into walls once a route got busy.** A neighbouring cell that is unwalkable stands in for its own cost with the centre's, so that a wall flattens that side of the slope rather than acting as a hill bodies are pushed down. That is right while the open side is downhill and wrong the moment it is not: an uphill neighbour on one side and a wall on the other reads as the wall being the cheaper way, and the gradient points into it. Congestion is what makes the open side uphill, so this appeared only once a route filled up and got worse the busier it got, as bodies peeling off towards a blocked way, being refused at its face and drifting back. A blocked side may still flatten its axis and can no longer win it, so a crowd walking along a wall still hugs it and is no longer pulled in.
+
 ## [0.3.0]
 
 ### Upgrading

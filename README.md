@@ -95,6 +95,18 @@ Separation keeps running by default, because a frozen body that stops being sepa
 
 ---
 
+### Sitting on the navmesh
+
+The bake asks the navmesh for the nearest surface to each cell centre. That call answers **however far away it has to look**, so what decides whether a cell is walkable is not the hit but how far it landed from the centre that asked. **Sample Accuracy** on the driver is that distance, from zero to one.
+
+At **1** a cell is on the navmesh or it is not. At **0** it accepts anything within half a cell, which is what this did unconditionally before 0.4.0, and it is where bodies standing inside walls came from: a cell centre buried in a wall finds the navmesh at the wall's foot, reports a hit half a cell away, and is marked walkable with its height taken from that edge. Every solid thing in the level grew a strip of invented ground around it.
+
+The reason it stays adjustable is that the strict answer shrinks the walkable area at every edge, by whatever part of a cell was hanging off. A corridor already only a cell or two wide can lose its middle. **Reach for a smaller cell size before a looser tolerance** — a looser tolerance does not recover a corridor that is genuinely too narrow, it invents one, and the bodies walking down it will be half inside the wall.
+
+Watch `WalkableCells` in the bake log across a change. It should fall when you tighten this, and it should fall by a ring rather than by a region.
+
+---
+
 ## Presets
 
 Most numbers in this system cannot be read on their own. Nothing about a rise smoothing of five says whether five is a lot, which way to move it, or which other three fields have to move with it to mean anything. So the unitless ones are grouped under a named dropdown, and the ones with real units (metres, degrees, radians per second) are left as numbers because they describe themselves.
@@ -263,6 +275,7 @@ These stay as plain numbers because they describe themselves and depend on your 
 | --- | --- | --- |
 | `cellSize` | metres | The single biggest cost lever. Doubling it quarters the cell count, the rebuild time and the per frame congestion cost |
 | `edgeClearance` | metres | How far a cell must be from unwalkable ground to count as walkable |
+| `sampleAccuracy` | fraction | How closely a cell must sit on the navmesh. 1 is on it or not, 0 accepts anything within half a cell |
 | `arriveRadius` | metres | Where a body counts as arrived and stops being driven |
 | `arriveTaper` | metres | The distance over which it eases to a stop, rather than switching off at a line |
 | `separationRadius` | metres | Room a body wants around itself. Kept separate from the navmesh radius, which is also wall clearance |
