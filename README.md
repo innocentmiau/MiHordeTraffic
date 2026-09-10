@@ -111,7 +111,8 @@ It is off by default because turning it on can disconnect ground an existing map
 
 Every preset writes its values into the fields it owns, so you can see what it chose. `CUSTOM` hands them back.
 
-### Turn Style
+<details>
+<summary><b>Turn Style</b> — how fast bodies turn onto a new direction</summary>
 
 | | `headingTurnRate` | `turnSpeed` | Time to reverse | Feels like |
 | --- | --- | --- | --- | --- |
@@ -120,7 +121,10 @@ Every preset writes its values into the fields it owns, so you can see what it c
 | `AGILE` | 7 | 18 | ~0.45 s | something quick and light |
 | `INSTANT` | 20 | 40 | immediate | can look robotic in a crowd |
 
-### Agility
+</details>
+
+<details>
+<summary><b>Agility</b> — how quickly bodies reach walking pace and give up when blocked</summary>
 
 | | `acceleration` | `deceleration` | `stallFraction` | Time to walking pace |
 | --- | --- | --- | --- | --- |
@@ -129,9 +133,10 @@ Every preset writes its values into the fields it owns, so you can see what it c
 | `BRISK` | 25 | 50 | 0.6 | ~0.14 s |
 | `INSTANT` | 200 | 200 | 0.9 | none |
 
-### Crowd Pressure
+</details>
 
-How much bodies ease off approaching a full cell.
+<details>
+<summary><b>Crowd Pressure</b> — how much bodies ease off approaching a full cell</summary>
 
 | | `comfortableFill` | `jamFill` | `minimumSpeedFraction` |
 | --- | --- | --- | --- |
@@ -140,9 +145,10 @@ How much bodies ease off approaching a full cell.
 | `BALANCED` | 0.5 | 0.95 | 0.25 |
 | `STRICT` | 0.3 | 0.8 | 0.1 |
 
-### Congestion Response
+</details>
 
-How far the crowd will detour around itself.
+<details>
+<summary><b>Congestion Response</b> — how far the crowd will detour around itself</summary>
 
 | | `maximumCost` | `riseSmoothing` | `fallSmoothing` | `progressSmoothing` | `costBlurRadius` |
 | --- | --- | --- | --- | --- | --- |
@@ -151,7 +157,10 @@ How far the crowd will detour around itself.
 | `BALANCED` | 30 | 5 | 2 | 4 | 1 |
 | `AGGRESSIVE` | 60 | 8 | 1 | 6 | 1 |
 
-### Refresh Rate
+</details>
+
+<details>
+<summary><b>Refresh Rate</b> — how eagerly the field is rebuilt when the target moves</summary>
 
 | | `rebuildInterval` | `rebuildDistance` | `minimumRebuildInterval` |
 | --- | --- | --- | --- |
@@ -160,9 +169,14 @@ How far the crowd will detour around itself.
 | `RESPONSIVE` | 0.15 | 1 | 0.033 |
 | `IMMEDIATE` | 0.05 | 0.5 | 0 |
 
+</details>
+
 ---
 
 ## Settings reference
+
+<details>
+<summary><b>Every field, with its unit</b></summary>
 
 | Field | Unit | What it is |
 | --- | --- | --- |
@@ -178,7 +192,11 @@ How far the crowd will detour around itself.
 | `overlapTolerance` | fraction of radii | How deep bodies may overlap before anything pushes. Zero never fully settles |
 | `updatesPerSecond` | per second | How often separation solves. 0 is every frame |
 
-### Settling
+</details>
+
+<details>
+<summary><b>Settling</b> — what to change when a crowd churns or freezes</summary>
+
 
 | Field | Default | Raise it to | Lower it to |
 | --- | --- | --- | --- |
@@ -187,6 +205,8 @@ How far the crowd will detour around itself.
 | `settledPushScale` | `.15` | Let settled bodies ooze apart faster | Hold formation harder |
 | `blockingNeighbours` | `3` | Pack tighter, churn more | Spread the stop further out |
 | `settledHoldTicks` | `8` | Steadier at a crowd's edge | React sooner, flicker more |
+
+</details>
 
 ---
 
