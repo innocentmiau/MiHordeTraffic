@@ -79,6 +79,22 @@ namespace MiHordeTraffic.Movement
         /// </summary>
         public float CellCapacity => _cellCapacity;
 
+        /*
+         * How much the congestion pass is actually walking, which is not the same number as the crowd size and is
+         * the one worth watching. A cell joins the set when a body stands in it and leaves once its density has
+         * decayed back to empty, so what this really counts is bodies multiplied by how long a cell takes to
+         * forget them. Far above the body count means the trail behind the crowd is the cost, not the crowd.
+         */
+        /// <summary>
+        /// How many cells the congestion pass is tracking right now.
+        /// </summary>
+        public int ActiveCongestionCells => _active.IsCreated ? _active.Length : 0;
+
+        /// <summary>
+        /// The most cells the congestion pass has tracked at once this session.
+        /// </summary>
+        public int PeakCongestionCells { get; private set; }
+
         [SerializeField] private HordeFlowFieldDriver driver;
 
         /*
@@ -692,7 +708,7 @@ namespace MiHordeTraffic.Movement
             return new HordeFlowMoveJob
             {
                 Grid = field.Grid,
-                Flow = field.Flow,
+                Mode = driver.DirectionMode,
                 Walkable = field.Walkable,
                 Integration = field.Integration,
                 Height = field.Height,
@@ -785,7 +801,9 @@ namespace MiHordeTraffic.Movement
                 Grid = field.Grid,
                 Positions = _positions,
                 Previous = _previousPositions,
-                Flow = field.Flow,
+                Walkable = field.Walkable,
+                Integration = field.Integration,
+                Mode = driver.DirectionMode,
                 Reference = _reference,
                 Touched = _touched,
                 Active = _active,
@@ -851,7 +869,9 @@ namespace MiHordeTraffic.Movement
                 Density = field.Density,
                 Cost = field.Cost,
                 ReferenceSum = _referenceSum,
-                WriteCost = congestionEnabled
+                WriteCost = congestionEnabled,
+                CellCapacity = _cellCapacity,
+                ComfortableFill = comfortableFill
             }
             .Schedule(handle);
 
@@ -945,6 +965,11 @@ namespace MiHordeTraffic.Movement
                 _handle.Complete();
 
             _scheduled = false;
+
+            /*
+             * Read here because this is the first point the gather has finished adding to it.
+             */
+            if (_active.IsCreated && _active.Length > PeakCongestionCells) PeakCongestionCells = _active.Length;
 
             using (PUBLISH_MARKER.Auto())
                 PublishStopped();

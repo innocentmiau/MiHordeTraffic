@@ -556,7 +556,7 @@ namespace MiHordeTraffic.Movement
 
             for (int i = 0; i < routeSteps; i++)
             {
-                float2 flow = field.Flow[cell];
+                float2 flow = HordeFlowDirection.At(field.Grid, field.Walkable, field.Integration, cell, field.DirectionMode);
                 if (flow.Equals(float2.zero)) break;
 
                 int2 next = grid.CellAt(cell) + new int2((int)math.round(flow.x), (int)math.round(flow.y));
@@ -591,7 +591,7 @@ namespace MiHordeTraffic.Movement
 
             if (cell >= 0)
             {
-                float2 flow = field.Flow[cell];
+                float2 flow = HordeFlowDirection.At(field.Grid, field.Walkable, field.Integration, cell, field.DirectionMode);
 
                 Gizmos.color = Color.green;
                 Gizmos.DrawLine(origin, origin + new float3(flow.x, 0f, flow.y) * 2f);

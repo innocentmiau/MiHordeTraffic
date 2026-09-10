@@ -25,8 +25,31 @@ namespace MiHordeTraffic.Movement
     public struct HordeCongestionPruneJob : IJob
     {
 
-        private const float RESTING_DENSITY = .001f;
-        private const float RESTING_COST = .001f;
+        /*
+         * How far below the density that starts to matter a cell has to fall before it is dropped. Measured against
+         * what a cell holds at rest and the fill at which bodies begin easing off, rather than as an absolute, so
+         * it means the same thing whatever the cells are and whatever the crowd is made of.
+         *
+         * The absolute it replaced was a thousandth of a body, which is not a number anything behaves differently
+         * at, and decay is exponential: getting there from a single body took about seven seconds. Every cell the
+         * crowd walked over stayed tracked for that long, so what the pass really cost was the crowd multiplied by
+         * the length of the trail behind it, and at a metre a cell that was fifteen cells per body.
+         *
+         * Nothing changes when a cell is dropped. Crowding is zero for any fill at or under the comfortable one, so
+         * a quarter of the way there is a density every reader of it already treats as empty.
+         */
+        private const float RESTING_FRACTION = .25f;
+        /*
+         * Two percent, because cost is a ratio and what it buys is a preference between routes. A cell a fiftieth
+         * dearer than ordinary ground bends nothing: the expansion compares whole cells of distance, and a
+         * fiftieth of one is not a detour anybody takes.
+         *
+         * A thousandth was the same mistake the density threshold was. Cost decays towards one at the same rate
+         * everything else does, so coming back from a jam of five took about eight and a half seconds to get that
+         * close, and every cell of a jam stayed tracked for all of it. A blocked route cleared ten seconds ago was
+         * still being blurred every frame.
+         */
+        private const float RESTING_COST = .02f;
 
         [ReadOnly] public NativeArray<int> Occupancy;
 
@@ -37,9 +60,13 @@ namespace MiHordeTraffic.Movement
         public NativeArray<float> ReferenceSum;
 
         public bool WriteCost;
+        public float CellCapacity;
+        public float ComfortableFill;
 
         public void Execute()
         {
+            float resting = math.max(CellCapacity * ComfortableFill * RESTING_FRACTION, .001f);
+
             /*
              * Backwards, because dropping a cell swaps the last one into its place and that one has not been looked
              * at yet. Walking forwards would step straight over it.
@@ -49,7 +76,7 @@ namespace MiHordeTraffic.Movement
                 int cell = Active[i];
 
                 if (Occupancy[cell] > 0) continue;
-                if (Density[cell] > RESTING_DENSITY) continue;
+                if (Density[cell] > resting) continue;
                 if (WriteCost && math.abs(Cost[cell] - 1f) > RESTING_COST) continue;
 
                 Density[cell] = 0f;

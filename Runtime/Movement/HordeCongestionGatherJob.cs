@@ -26,9 +26,12 @@ namespace MiHordeTraffic.Movement
 
         public HordeGridInfo Grid;
 
+        public FlowDirectionMode Mode;
+
         [ReadOnly] public NativeArray<float3> Positions;
         [ReadOnly] public NativeArray<float3> Previous;
-        [ReadOnly] public NativeArray<float2> Flow;
+        [ReadOnly] public NativeArray<byte> Walkable;
+        [ReadOnly] public NativeArray<float> Integration;
         [ReadOnly] public NativeArray<float> Reference;
 
         /*
@@ -87,7 +90,7 @@ namespace MiHordeTraffic.Movement
 
                 if (math.distancesq(position.xz, Goal.xz) <= ArriveRadiusSquared) continue;
 
-                float2 flow = Flow[cell];
+                float2 flow = HordeFlowDirection.At(Grid, Walkable, Integration, cell, Mode);
                 if (flow.Equals(float2.zero)) continue;
 
                 /*

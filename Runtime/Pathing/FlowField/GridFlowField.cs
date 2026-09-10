@@ -43,7 +43,6 @@ namespace MiHordeTraffic.Pathing.FlowField
         private NativeArray<int> _blocked;
         private NativeArray<float> _cost;
         private NativeArray<float> _integration;
-        private NativeArray<float2> _flow;
         private NativeArray<float> _height;
         private NativeArray<float> _density;
         private NativeList<GridFlowFieldBuildJob.HeapEntry> _heap;
@@ -65,7 +64,6 @@ namespace MiHordeTraffic.Pathing.FlowField
          * changed underneath it. The copy is one memcpy at schedule time against a race that is otherwise real.
          */
         private NativeArray<float> _integrationBack;
-        private NativeArray<float2> _flowBack;
         private NativeArray<float> _costSnapshot;
 
 
@@ -128,9 +126,9 @@ namespace MiHordeTraffic.Pathing.FlowField
         public NativeArray<float> Cost => _cost;
 
         /// <summary>
-        /// Per cell direction towards the goal.
+        /// How a cell's direction is taken from the integration field, as of the last expansion.
         /// </summary>
-        public NativeArray<float2> Flow => _flow;
+        public FlowDirectionMode DirectionMode { get; private set; } = FlowDirectionMode.GRADIENT;
 
         /// <summary>
         /// Smoothed count of bodies standing in each cell, which is what bodies slow down for.
@@ -189,8 +187,6 @@ namespace MiHordeTraffic.Pathing.FlowField
             _costSnapshot = new NativeArray<float>(count, Allocator.Persistent);
             _integration = new NativeArray<float>(count, Allocator.Persistent);
             _integrationBack = new NativeArray<float>(count, Allocator.Persistent);
-            _flow = new NativeArray<float2>(count, Allocator.Persistent);
-            _flowBack = new NativeArray<float2>(count, Allocator.Persistent);
             _height = new NativeArray<float>(count, Allocator.Persistent);
             _density = new NativeArray<float>(count, Allocator.Persistent);
             _heap = new NativeList<GridFlowFieldBuildJob.HeapEntry>(math.max(count / 4, 64), Allocator.Persistent);
@@ -299,6 +295,8 @@ namespace MiHordeTraffic.Pathing.FlowField
         {
             if (_scheduled || !IsBaked) return false;
 
+            DirectionMode = mode;
+
             NativeArray<float>.Copy(_cost, _costSnapshot, _cost.Length);
 
             JobHandle build = new GridFlowFieldBuildJob
@@ -314,20 +312,13 @@ namespace MiHordeTraffic.Pathing.FlowField
             }
             .Schedule();
 
-            _handle = new GridFlowDirectionJob
-            {
-                Grid = Grid,
-                Walkable = _walkable,
-                Integration = _integrationBack,
-                Mode = mode,
-                Flow = _flowBack
-            }
             /*
-             * Batched from the machine rather than by a constant. Sixty four was fine on the grid this was written
-             * against and is fifteen thousand dispatches on a kilometre of map at a metre, which is a job that
-             * spends much of its life handing out work while everything queued behind it waits for a worker.
+             * The expansion is the whole of the work now. Turning the result into a direction per cell used to be a
+             * second job over the entire grid, and it was the thing occupying every worker for the frames after a
+             * rebuild: nothing waited on it, but with the pool full the mover's own chain had nobody to run it.
+             * A direction is a local slope of what this job produces, so it is taken where it is asked for instead.
              */
-            .Schedule(Grid.Count, HordeJobBatch.For(Grid.Count), build);
+            _handle = build;
 
             _scheduled = true;
             JobHandle.ScheduleBatchedJobs();
@@ -375,7 +366,6 @@ namespace MiHordeTraffic.Pathing.FlowField
              * and what everything was reading becomes the scratch the next expansion writes into.
              */
             (_integration, _integrationBack) = (_integrationBack, _integration);
-            (_flow, _flowBack) = (_flowBack, _flow);
 
             IsBuilt = _goalIndex[0] >= 0;
         }
@@ -451,7 +441,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             int index = Grid.IndexOf(position);
             if (index < 0 || _walkable[index] == 0) return false;
 
-            direction = _flow[index];
+            direction = HordeFlowDirection.At(Grid, _walkable, _integration, index, DirectionMode);
             return !direction.Equals(float2.zero);
         }
 
@@ -499,8 +489,6 @@ namespace MiHordeTraffic.Pathing.FlowField
             if (_costSnapshot.IsCreated) _costSnapshot.Dispose();
             if (_integration.IsCreated) _integration.Dispose();
             if (_integrationBack.IsCreated) _integrationBack.Dispose();
-            if (_flow.IsCreated) _flow.Dispose();
-            if (_flowBack.IsCreated) _flowBack.Dispose();
             if (_height.IsCreated) _height.Dispose();
             if (_density.IsCreated) _density.Dispose();
             if (_heap.IsCreated) _heap.Dispose();

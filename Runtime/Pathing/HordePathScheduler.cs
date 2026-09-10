@@ -200,6 +200,13 @@ namespace MiHordeTraffic.Pathing
                     .Append(driver.AverageBuildMilliseconds.ToString("F3")).AppendLine(" ms average");
             }
 
+            HordeFlowMovement mover = HordeFlowMovement.Instance;
+
+            if (mover)
+                text.Append("    congestion ").Append(mover.ActiveCongestionCells).Append(" cells tracked, ")
+                    .Append(mover.PeakCongestionCells).Append(" at peak, against ")
+                    .Append(mover.BodyCount).AppendLine(" bodies");
+
             _phases.AppendTo(text);
 
             if (_phases.Available) _worst?.AppendTo(text, HordePhaseTimings.Names);

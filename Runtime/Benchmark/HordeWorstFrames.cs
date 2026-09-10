@@ -8,6 +8,12 @@ namespace MiHordeTraffic.Benchmark
      * table by four hundredths of a millisecond, which means the report you would go to looking for it is the one
      * report guaranteed not to show it.
      *
+     * Ranked by what this package cost the frame rather than by how long the frame took, which are different
+     * questions and only one of them is answerable from in here. A run holding four editor stalls, a collection or
+     * a shader compile would otherwise report those four and nothing else, and the frames where the crowd was
+     * genuinely slow never make the list at all. The frame time is still carried on every entry, so a spike that
+     * is mostly not this package still says so.
+     *
      * Kept as the worst several rather than the single worst, because one outlier says nothing about whether it is
      * a recurring shape or a one off. Four of them with the same row lit up is a cause; four of them with four
      * different rows lit up is the editor, or the GPU, or the collector, and the answer is that it is not this.
@@ -25,6 +31,7 @@ namespace MiHordeTraffic.Benchmark
         private readonly int _phases;
 
         private readonly float[] _frameMilliseconds;
+        private readonly double[] _counted;
         private readonly int[] _frameNumbers;
         private readonly int[] _substeps;
         private readonly double[] _readings;
@@ -48,6 +55,7 @@ namespace MiHordeTraffic.Benchmark
             _phases = phases;
 
             _frameMilliseconds = new float[_capacity];
+            _counted = new double[_capacity];
             _frameNumbers = new int[_capacity];
             _substeps = new int[_capacity];
             _readings = new double[_capacity * phases];
@@ -69,13 +77,20 @@ namespace MiHordeTraffic.Benchmark
             _seen++;
 
             if (_capacity == 0) return;
-            if (_count == _capacity && milliseconds <= _frameMilliseconds[_count - 1]) return;
+
+            double counted = 0d;
+
+            for (int i = 0; i < _phases; i++)
+                counted += readings[i];
+
+            if (_count == _capacity && counted <= _counted[_count - 1]) return;
 
             int slot = _count < _capacity ? _count++ : _capacity - 1;
 
-            while (slot > 0 && milliseconds > _frameMilliseconds[slot - 1])
+            while (slot > 0 && counted > _counted[slot - 1])
             {
                 _frameMilliseconds[slot] = _frameMilliseconds[slot - 1];
+                _counted[slot] = _counted[slot - 1];
                 _frameNumbers[slot] = _frameNumbers[slot - 1];
                 _substeps[slot] = _substeps[slot - 1];
 
@@ -85,6 +100,7 @@ namespace MiHordeTraffic.Benchmark
             }
 
             _frameMilliseconds[slot] = milliseconds;
+            _counted[slot] = counted;
             _frameNumbers[slot] = _seen;
             _substeps[slot] = substeps;
 
@@ -113,33 +129,30 @@ namespace MiHordeTraffic.Benchmark
         {
             if (_count == 0) return;
 
-            text.Append("  worst frames ").Append(_count).AppendLine(" slowest, with what the main thread was doing on each");
+            text.Append("  worst frames ").Append(_count).AppendLine(" costliest for this package, with the frame they landed on");
 
             for (int i = 0; i < _count; i++)
             {
-                text.Append("    ").Append(_frameMilliseconds[i].ToString("F2")).Append(" ms at frame ")
+                text.Append("    ").Append(_counted[i].ToString("F3")).Append(" ms of package on a ")
+                    .Append(_frameMilliseconds[i].ToString("F2")).Append(" ms frame, at frame ")
                     .Append(_frameNumbers[i]);
 
                 if (_substeps[i] > 1) text.Append(", ").Append(_substeps[i]).Append(" movement substeps");
 
                 text.AppendLine();
 
-                double counted = 0d;
-
                 for (int phase = 0; phase < _phases; phase++)
                 {
                     double reading = _readings[i * _phases + phase];
-
-                    counted += reading;
 
                     if (reading < .01d) continue;
 
                     text.Append("        ").Append(names[phase].PadRight(20)).AppendLine(reading.ToString("F3"));
                 }
 
-                text.Append("        ").Append("counted".PadRight(20)).Append(counted.ToString("F3"))
+                text.Append("        ").Append("counted".PadRight(20)).Append(_counted[i].ToString("F3"))
                     .Append(" of ").Append(_frameMilliseconds[i].ToString("F2"))
-                    .AppendLine(counted < _frameMilliseconds[i] * .5f ? "   the spike is mostly not this package" : "");
+                    .AppendLine(_counted[i] < _frameMilliseconds[i] * .5f ? "   the rest of that frame was not this package" : "");
             }
         }
 

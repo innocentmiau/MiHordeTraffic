@@ -305,9 +305,15 @@ A ready made slider component is not shipped here, because the only interesting 
 
 An average cannot show you a spike. One frame of a tenth of a second across a couple of thousand moves every row of the phases table by four hundredths of a millisecond, so the report you would go to looking for it is the one report guaranteed not to show it.
 
-**Worst Frames Tracked** on the scheduler keeps the slowest few frames of a run with the phase breakdown of each, and prints them under the averages. Four is enough to tell a recurring shape from a one off: four spikes with the same row lit up is a cause, four with four different rows is the editor, or the GPU, or the collector, and the answer is that it is not this. It says so outright when the package accounted for less than half the frame.
+**Worst Frames Tracked** on the scheduler keeps the frames that cost *this package* the most, with the phase breakdown of each, and prints them under the averages. Ranked by the package's own cost rather than by frame time on purpose: a run holding a few editor stalls or a collection would otherwise report those and nothing else, and the frames where the crowd was genuinely slow would never make the list. The frame time is carried on every entry regardless. Four is enough to tell a recurring shape from a one off: four spikes with the same row lit up is a cause, four with four different rows is the editor, or the GPU, or the collector, and the answer is that it is not this. It says so outright when the package accounted for less than half the frame.
 
 It records nothing unless a frame turns out to be among the slowest already kept, which almost every frame fails, and it allocates nothing at all, since a diagnostic that produces garbage lands the collection inside the frames it is measuring.
+
+### What the congestion pass is walking
+
+The report also carries **congestion N cells tracked, M at peak, against B bodies**. The pass runs over the cells the crowd has been in recently, not over the crowd, so a cell joins when a body arrives and leaves once its density has decayed back to empty. What that really counts is bodies multiplied by how long a cell takes to forget them.
+
+Far above the body count means the trail behind the crowd is the cost rather than the crowd. Watch the peak rather than the current figure, since the report prints at quit when the crowd may have settled, and a jam that has cleared holds its cells for as long as its cost takes to come back down.
 
 ## Roadmap
 

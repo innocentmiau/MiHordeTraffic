@@ -128,7 +128,7 @@ namespace MiHordeTraffic.Tuning
                     continue;
                 }
 
-                float2 flow = field.Flow[i];
+                float2 flow = HordeFlowDirection.At(field.Grid, field.Walkable, field.Integration, i, field.DirectionMode);
 
                 if (flow.Equals(float2.zero))
                 {

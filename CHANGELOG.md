@@ -27,6 +27,8 @@ Bodies close to the goal steer at the goal itself rather than by the direction s
 
 - A **bake warning** naming the cell count and suggesting a cell size when a grid is large enough for the expansion to run across several frames. Cell Size looks like a quality setting and behaves like a quadratic cost, and that is not something anyone should have to find out with a profiler.
 
+- `HordeFlowMovement.ActiveCongestionCells` and `PeakCongestionCells`, reported beside the field as **congestion N cells tracked, M at peak, against B bodies**. What the congestion pass walks is not the crowd, it is every cell the crowd has stood in recently, and the gap between those two numbers is the only way to see that. It was fifteen cells per body when it was first measured.
+
 - `HordeFlowFieldDriver.BlockArea`, `UnblockArea` and `MarkDirty`, and `HordeFlowMovement.CellCapacity`.
 
 ### Changed
@@ -34,6 +36,16 @@ Bodies close to the goal steer at the goal itself rather than by the direction s
 - **The expansion is asynchronous.** It writes into back buffers and swaps them in when it finishes, which is what lets it take as long as it needs. A million cell grid is most of a fifth of a second, and paying that on the main thread was a hitch every rebuild interval; leaving it in flight instead needs the crowd to have something consistent to read in the meantime, and the only thing that is is the field as it was before. The cost array is copied at schedule time for the same reason from the other side, since congestion rewrites it every frame.
 
 - **The congestion pass runs over the cells the crowd is standing in rather than over the grid.** It was four passes on one thread, three of them proportional to the map: a kilometre at one metre was fifteen million memory bound operations a frame, with the mover waiting on all of it. It is four jobs now, three of them on every worker, walking an active set that cells join when a body arrives and leave once their density has decayed back to empty. Five thousand bodies stand in at most five thousand cells, so what this costs stopped depending on how big the map is.
+
+- **The per cell direction array is gone.** Every expansion used to end with a parallel job over the whole grid, turning the integration field into a direction for each cell and writing an array of a million of them, of which a crowd of five thousand ever read five thousand. Nothing waited on it, because the movement reads the previous field while the next is built, and it did not need to: it occupied every worker for the frames it took, so the mover's own chain had nobody to run it and the main thread ended up doing all of that work alone. It showed as the movement wait spiking to sixteen milliseconds against an average of one and a half. A direction is a local slope of the integration field, so `HordeFlowDirection` takes it where it is asked for, at four array reads for the cell a body is standing in. Eight megabytes lighter on a kilometre of map, and the pool stays free.
+
+- **Parallel batches are capped as well as floored.** A batch is the smallest amount of work anything can commit to, and the main thread does not idle while it waits on a job, it takes batches and runs them. Sized only by dividing, a large grid gave thirty thousand cells to a batch, so joining near the end of one meant volunteering for a third of the flow field.
+
+- **Cells leave the congestion set when they stop mattering rather than when they stop being nonzero.** Both thresholds were absolutes far below anything that changes behaviour, against decay that is exponential: density took about seven seconds to reach a thousandth of a body and cost about eight and a half to come back within a thousandth of ordinary ground. Every cell the crowd walked over stayed tracked for that long, so the pass cost the crowd multiplied by the length of its trail. Density is now measured against what a cell holds at rest and the fill where bodies begin easing off, so it means the same thing at any cell size, and cost is allowed a fiftieth either way.
+
+- **The worst frames are ranked by what this package cost, not by how long the frame took.** A run holding four editor stalls or a collection reported those four and nothing else, and the frames where the crowd was genuinely slow never made the list. The frame time is still carried on every entry, so a spike that is mostly not this package still says so.
+
+- A body's position is not written when it has not moved, for the same reason its rotation is not: Unity's transform system does its work for transforms that changed. A settled body is asked for no speed and, once its neighbours are far enough away, handed no push either, so what was left was the same three floats written over themselves for most of the crowd every frame.
 
 - Parallel jobs sized from the machine rather than by a constant, through `HordeJobBatch`. The direction job ran at sixty four cells a batch, which is two and a half thousand dispatches on a large grid and a job that spends much of its life handing out work while everything queued behind it waits for a worker.
 

@@ -83,9 +83,16 @@ namespace MiHordeTraffic.Movement
          */
         private const float FACING_SETTLED_DOT = .9999f;
 
+        /*
+         * A tenth of a millimetre, squared. Below it a body has not moved, and writing the position it already
+         * holds costs the whole transform update for it anyway.
+         */
+        private const float SETTLED_MOVEMENT_SQUARED = .00000001f;
+
         public HordeGridInfo Grid;
 
-        [ReadOnly] public NativeArray<float2> Flow;
+        public FlowDirectionMode Mode;
+
         [ReadOnly] public NativeArray<byte> Walkable;
         [ReadOnly] public NativeArray<float> Integration;
         [ReadOnly] public NativeArray<float> Height;
@@ -488,7 +495,7 @@ namespace MiHordeTraffic.Movement
 
             if (onGrid)
             {
-                float2 flow = Flow[cell];
+                float2 flow = HordeFlowDirection.At(Grid, Walkable, Integration, cell, Mode);
 
                 /*
                  * Steered at the goal itself rather than by the field once a body is closing on it, because the
@@ -666,7 +673,18 @@ namespace MiHordeTraffic.Movement
             if (nextWalkable)
             {
                 next.y = Height[nextCell];
-                transform.position = next;
+
+                /*
+                 * Not written when the body is already there, and the saving is the write rather than the maths.
+                 * Unity's transform system does its work for transforms that changed, so handing a body back the
+                 * position it already holds costs the same as moving it.
+                 *
+                 * A settled crowd is where this pays. A body that has arrived is asked for no speed, and a settled
+                 * one whose neighbours are far enough away is handed no push either, since anything under a
+                 * millimetre a second is never delivered at all. What was left was the same three floats written
+                 * over themselves, for most of the crowd, every frame.
+                 */
+                if (math.distancesq(next, position) > SETTLED_MOVEMENT_SQUARED) transform.position = next;
             }
             else if (!onWalkable)
             {
@@ -677,7 +695,7 @@ namespace MiHordeTraffic.Movement
                  * Asked of walkability alone, not of reachability. A body that can simply not get to the goal from
                  * where it stands is not stranded, it is waiting, and it stays on the walkable side of the wall.
                  */
-                transform.position = next;
+                if (math.distancesq(next, position) > SETTLED_MOVEMENT_SQUARED) transform.position = next;
             }
             else
             {
