@@ -1,7 +1,7 @@
 {
   "name": "com.andreleandrodev.mihordetraffic",
   "displayName": "MiHordeTraffic",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "unity": "6000.3",
   "unityRelease": "0f1",
   "description": "Crowd pathfinding for thousands of agents, where the crowd is aware of itself. Replaces per agent A* with a single flow field expansion that serves the whole horde, and prices every cell by how fast bodies actually cross it, so a jammed route becomes expensive and a second route opens on its own without anything having to notice the jam or decide a detour is worthwhile. Includes jobified reactive separation, crowd slowing, settling around a target, a scene setup tool, a live advisor that names which setting is costing the most, and a runtime switch to stock NavMeshAgent so any performance claim can be checked rather than believed.",

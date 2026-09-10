@@ -5,6 +5,44 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+### Upgrading
+
+**`SeparationSettings.updateInterval` is gone and every asset loses its value.** It counted frames, so the same asset gave a different crowd at sixty and at two hundred, and a different one in the editor than in a build. It is now **Updates Per Second**, where zero means every frame, which is what an interval of one meant. A float replacing an int cannot carry the old value across, so an asset that had been tuned comes back at the default. An interval of two at sixty frames is thirty a second.
+
+**`edgeClearance` now defaults to zero.** With Sample Accuracy at one the navmesh's own agent radius inset has already done this, from walls and from ledges alike, so eroding again applies the same clearance twice and takes real ground for it. Existing assets keep whatever they had; new drivers get zero. Raise it only when bodies are wider than the agent the navmesh was baked for. The margin around **runtime obstacles** is a separate setting now, because nothing insets a building.
+
+**The advisor stops reporting the field as most of your frame.** It was measuring expansion latency against frame time, and since 0.3.0 those are unrelated: a fifth of a second four times a second read as eighty percent of the frame while the frame was paying nothing at all.
+
+### Added
+
+- **Gates.** `HordeObstacle` and `HordeMovingObstacle` take a **Kind** of `SOLID` or `GATE`. A grid could say that ground was not there and could not say it was shut, and a crowd whose way is closed has no route at all, so it falls back to walking at the goal and presses against whatever lies between, which is as likely to be a mountain as the door. A gate stays walkable, so the expansion still reaches through it at a great price and every cell behind one keeps a real cost to the goal, and the mover refuses to step into it. The field leads the crowd to the door and the door holds them, so they queue there and pour through when it opens. **Gate Penalty** on the driver is how many cells of detour a shut gate is worth: high so any genuinely open route wins, finite so that when every route is shut the answer is still the nearest door.
+
+- **Height is part of what a step costs.** The bake has sampled a height per cell since the beginning and nothing had ever read it, so the expansion measured a map drawn flat: a hill cost exactly what going round it cost, and two cells at the top and foot of a ledge were a step apart. The cost is now the real distance between the two cell centres, so up one and along one is the hypotenuse of both and nothing has to be tuned for it.
+
+- **Maximum Slope** on the driver, rise over run above which two cells stop being connected, in the expansion and in the mover alike. Height cost prices a climb and cannot forbid one: climbing grows with height while a detour grows with distance, so a single step is always bounded and a five metre cliff will always beat a twenty metre walk. Only a limit refuses it. One is forty five degrees, which is Unity's own navmesh limit. Zero, the default, leaves everything connected and only prices the climb.
+
+- **Obstacle Clearance**, the margin blocked around a runtime obstacle, separated from the bake's edge clearance because they are unrelated. A building is not inset by anything, so without it a body stands with the last part of a cell between it and a wall.
+
+### Changed
+
+- Ground height is read across the four cells around a body rather than out of the one underfoot. One reading per cell makes the ground a staircase, level within a cell and a step at every boundary, and a body being jostled across one of those boundaries pops between two heights every frame.
+
+- The advisor asks whether an expansion arrives inside the interval that asks for one, which is what latency can genuinely be too slow for, and says outright that it costs the frame nothing.
+
+### Fixed
+
+- **Separation got weaker when it was asked to run less often, rather than just running less often.** A solve is handed a delta that caps how much overlap it may undo, and it was handed one frame's worth however many frames it had been since the last one. Raising the interval left each pass correcting a single frame with a third as many passes, so the crowd went soft rather than choppy, which is why the setting looked like it was working.
+
+- **Edge clearance did nothing at the default cell size.** It measured from a cell's centre to the centre of an unwalkable one, which overstates the gap by half a cell, and at a metre of cells with half a metre of clearance compared one against a half and eroded nothing at all. What a body wants clearance from is where the ground stops.
+
+- **A crowd whose every route was blocked never settled and ground itself into a pile.** Stalling was only ever measured inside the branch that follows a route, so bodies with no route at all reported that they still wanted to move, nothing seeded the settle, and the whole crowd pressed into itself for as long as the way stayed shut.
+
+- **Bodies with no route also never wound down.** That branch skipped the speed resolve entirely, which is what drags a body's speed towards what it is actually achieving, so one pressed against something impassable shoved at its full walking pace forever. Settling reached the push it received and not the drive it applied, which is compression rather than a crowd holding its ground.
+
+- **A body caught inside a gate as it shut had no way out.** Gates stay walkable so the expansion can reach through them, which also meant a body standing in one read as perfectly placed: it followed a flow that points onward through the gate and had every step refused. A gate is ground to route towards and never ground to stand on, so a body in one now has no footing and takes the recovery out, exactly as it does when a solid obstacle closes on it.
+
 ## [0.4.0]
 
 ### Upgrading
