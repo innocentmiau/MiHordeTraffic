@@ -49,7 +49,7 @@ Unity 6000.3 or newer. Pulls in Burst, Collections, Mathematics and AI Navigatio
 ## Setup
 
 1. Bake a NavMesh.
-2. **Tools > MiHordeTraffic > Set Up Scene** — adds everything missing to one manager object.
+2. **Tools > MiHordeTraffic > Set Up Scene**: adds everything missing to one manager object.
 3. Assign the driver's **Target**.
 4. Put **`HordeAgent`** on your entity prefab. That is the only component it needs.
 
@@ -73,7 +73,7 @@ if (HordeSpawn.TryFind(wanted, 5f, out Vector3 spawn))
     pool.Spawn(spawn, rotation);
 ```
 
-Returns the nearest cell that is on the grid, reachable, not gated and not already packed, as a point on the ground scattered inside its cell. Sampling the NavMesh yourself does not answer this — the grid rejects ground the NavMesh accepts.
+Returns the nearest cell that is on the grid, reachable, not gated and not already packed, as a point on the ground scattered inside its cell. Sampling the NavMesh yourself does not answer this, because the grid rejects ground the NavMesh accepts.
 
 An overload takes how full a cell may already be, as a fraction of what it holds at rest.
 
@@ -85,13 +85,13 @@ Put **`HordeObstacle`** on a building. It takes the ground under it out of the g
 
 Two speeds of effect: bodies stop walking into it **immediately**, and route around it on the **next expansion** (up to `rebuildInterval`).
 
-**`HordeMovingObstacle`** is a separate component for things that move. It rechecks a few times a second and, by default, asks for no expansion at all — bodies still cannot enter it, they are just not steered around it. Turn **Update Routing** on for something large enough that sliding along it will not get a body past.
+**`HordeMovingObstacle`** is a separate component for things that move. It rechecks a few times a second and, by default, asks for no expansion at all. Bodies still cannot enter it, they are just not steered around it. Turn **Update Routing** on for something large enough that sliding along it will not get a body past.
 
 ### Gates
 
 Set **Kind** to `GATE` and the ground stays routable but not walkable. The crowd paths *to* the gate and queues against it, then pours through when it opens.
 
-Without this a closed route is simply no route, so the crowd steers straight at the goal and piles against whatever is in the way — often a wall nowhere near the door.
+Without this a closed route is simply no route, so the crowd steers straight at the goal and piles against whatever is in the way, often a wall nowhere near the door.
 
 **Gate Penalty** on the driver is how many cells of detour a shut gate is worth. High enough that an open route always wins, finite so that when everything is shut they still queue at the nearest door.
 
@@ -101,7 +101,7 @@ Without this a closed route is simply no route, so the crowd steers straight at 
 
 A step costs the real distance between two cell centres, so a hill is dearer than walking around it. Nothing to configure.
 
-**Cost cannot forbid a climb, only price one** — a 5 m cliff costs about 5 and will always beat a 20 m detour. **Maximum Slope** is the refusal: rise over run, enforced by both the routing and the movement. `1` is 45°, matching Unity's NavMesh Max Slope. `0` (default) connects everything and only prices the climb.
+**Cost cannot forbid a climb, only price one**: a 5 m cliff costs about 5 and will always beat a 20 m detour. **Maximum Slope** is the refusal: rise over run, enforced by both the routing and the movement. `1` is 45°, matching Unity's NavMesh Max Slope. `0` (default) connects everything and only prices the climb.
 
 It is off by default because turning it on can disconnect ground an existing map relied on.
 
@@ -112,7 +112,7 @@ It is off by default because turning it on can disconnect ground an existing map
 Every preset writes its values into the fields it owns, so you can see what it chose. `CUSTOM` hands them back.
 
 <details>
-<summary><b>Turn Style</b> — how fast bodies turn onto a new direction</summary>
+<summary><b>Turn Style</b>: how fast bodies turn onto a new direction</summary>
 
 | | `headingTurnRate` | `turnSpeed` | Time to reverse | Feels like |
 | --- | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ Every preset writes its values into the fields it owns, so you can see what it c
 </details>
 
 <details>
-<summary><b>Agility</b> — how quickly bodies reach walking pace and give up when blocked</summary>
+<summary><b>Agility</b>: how quickly bodies reach walking pace and give up when blocked</summary>
 
 | | `acceleration` | `deceleration` | `stallFraction` | Time to walking pace |
 | --- | --- | --- | --- | --- |
@@ -136,7 +136,7 @@ Every preset writes its values into the fields it owns, so you can see what it c
 </details>
 
 <details>
-<summary><b>Crowd Pressure</b> — how much bodies ease off approaching a full cell</summary>
+<summary><b>Crowd Pressure</b>: how much bodies ease off approaching a full cell</summary>
 
 | | `comfortableFill` | `jamFill` | `minimumSpeedFraction` |
 | --- | --- | --- | --- |
@@ -148,7 +148,7 @@ Every preset writes its values into the fields it owns, so you can see what it c
 </details>
 
 <details>
-<summary><b>Congestion Response</b> — how far the crowd will detour around itself</summary>
+<summary><b>Congestion Response</b>: how far the crowd will detour around itself</summary>
 
 | | `maximumCost` | `riseSmoothing` | `fallSmoothing` | `progressSmoothing` | `costBlurRadius` |
 | --- | --- | --- | --- | --- | --- |
@@ -160,7 +160,7 @@ Every preset writes its values into the fields it owns, so you can see what it c
 </details>
 
 <details>
-<summary><b>Refresh Rate</b> — how eagerly the field is rebuilt when the target moves</summary>
+<summary><b>Refresh Rate</b>: how eagerly the field is rebuilt when the target moves</summary>
 
 | | `rebuildInterval` | `rebuildDistance` | `minimumRebuildInterval` |
 | --- | --- | --- | --- |
@@ -195,7 +195,7 @@ Every preset writes its values into the fields it owns, so you can see what it c
 </details>
 
 <details>
-<summary><b>Settling</b> — what to change when a crowd churns or freezes</summary>
+<summary><b>Settling</b>: what to change when a crowd churns or freezes</summary>
 
 
 | Field | Default | Raise it to | Lower it to |
@@ -214,7 +214,7 @@ Every preset writes its values into the fields it owns, so you can see what it c
 
 Quitting play mode logs a session report: frame time distribution, field size, rebuild count and latency, and a per phase breakdown of what the package cost the main thread.
 
-**Read the renderer before you tune the crowd.** Simulation cost per body is flat; rendering cost is not, and a crowd that settles is a crowd piled into one place. A test reading 30 ms a frame at 5000 bodies had 2.4 ms of this package in it — the rest was a prefab missing its `LODGroup`.
+**Read the renderer before you tune the crowd.** Simulation cost per body is flat; rendering cost is not, and a crowd that settles is a crowd piled into one place. A test reading 30 ms a frame at 5000 bodies had 2.4 ms of this package in it. The rest was a prefab missing its `LODGroup`.
 
 Three rows worth knowing:
 
