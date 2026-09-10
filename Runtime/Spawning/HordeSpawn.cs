@@ -131,7 +131,7 @@ namespace MiHordeTraffic.Spawning
 
                 if (best < 0) continue;
 
-                spawn = Scatter(grid, bestCell, field.HeightAt(best));
+                spawn = Scatter(grid, field, bestCell, best);
                 return true;
             }
 
@@ -151,7 +151,7 @@ namespace MiHordeTraffic.Spawning
         /// <summary>
         /// A point inside a cell rather than its centre, so a wave does not stack on one spot.
         /// </summary>
-        private static Vector3 Scatter(HordeGridInfo grid, int2 cell, float height)
+        private static Vector3 Scatter(HordeGridInfo grid, GridFlowField field, int2 cell, int index)
         {
             uint seed = math.hash(new int3(cell.x, cell.y, (int)_calls++));
 
@@ -160,8 +160,13 @@ namespace MiHordeTraffic.Spawning
             float spread = grid.CellSize * SCATTER_FRACTION;
 
             float3 centre = grid.CentreOf(cell);
+            float3 point = new float3(centre.x + x * spread, centre.y, centre.z + z * spread);
 
-            return new Vector3(centre.x + x * spread, height, centre.z + z * spread);
+            /*
+             * Read where the body is actually being put rather than at the cell centre, since the scatter moves it
+             * up to most of a cell away and on a slope that is a real difference in height.
+             */
+            return new Vector3(point.x, HordeGroundHeight.At(grid, field.Walkable, field.Height, point, index), point.z);
         }
 
     }

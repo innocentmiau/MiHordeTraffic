@@ -93,6 +93,14 @@ namespace MiHordeTraffic.Movement
 
         public FlowDirectionMode Mode;
 
+        /*
+         * The most height a single step between cells may cover, or zero for no limit. Routing avoiding a drop is
+         * not the same as a body being unable to fall down one: the expansion can refuse to lead anybody over a
+         * ledge and separation will still shove somebody off it, and a step tested only against walkability is
+         * happy to take them, snapping them to the height of whatever they landed in.
+         */
+        public float MaximumRise;
+
         [ReadOnly] public NativeArray<byte> Walkable;
         [ReadOnly] public NativeArray<float> Integration;
         [ReadOnly] public NativeArray<float> Height;
@@ -297,6 +305,28 @@ namespace MiHordeTraffic.Movement
             }
 
             return math.normalizesafe(footing, float3.zero);
+        }
+
+        /*
+         * Ground a body may actually put a foot on, which is walkable ground it can reach from where it is standing
+         * rather than walkable ground as such. A flat grid cannot see a ledge: the top of one and the foot of it
+         * are neighbours in two dimensions, so without this a body walks off a five metre drop the same way it
+         * walks across a floor, and is placed at the bottom of it.
+         *
+         * Refusing the step rather than falling, because the crowd already knows what to do with a refused step. It
+         * tries each axis on its own and slides along whatever it cannot cross, so a body pressed at a ledge walks
+         * along the edge of it instead of over.
+         */
+        /// <summary>
+        /// Whether a body standing in one cell is allowed to step into another.
+        /// </summary>
+        private bool Steppable(int from, int to)
+        {
+            if (to < 0 || Walkable[to] == 0) return false;
+
+            if (MaximumRise <= 0f || from < 0 || to == from) return true;
+
+            return math.abs(Height[to] - Height[from]) <= MaximumRise;
         }
 
         /// <summary>
@@ -613,17 +643,62 @@ namespace MiHordeTraffic.Movement
                      * A recovering body still turns, and still turns at a limited rate, so walking back onto
                      * described ground does not look like a body snapping round on the spot.
                      */
-                    Heading[index] = TurnTowards(Heading[index], math.normalizesafe(rescue.xz, Heading[index]));
+                    float2 heading = TurnTowards(Heading[index], math.normalizesafe(rescue.xz, Heading[index]));
 
-                    velocity += rescue * Speed[index];
-                    steering = Speed[index];
+                    Heading[index] = heading;
+
+                    float open = Speed[index];
+
+                    OpenSpeed[index] = open;
+                    steering = open;
+
+                    /*
+                     * Driven through the same speed resolve as a body with a route, which this branch skipped
+                     * entirely and should never have. That resolve is what winds a body down: it drags the speed
+                     * towards what the body is actually achieving, so one pressed against something it cannot pass
+                     * ends up asking for almost nothing. Without it a blocked crowd shoved at its full walking
+                     * pace, every frame, for as long as the way stayed shut.
+                     *
+                     * Settling has to reach the drive here too. It scales the push a settled body receives down to
+                     * a fraction, so applying it to one side and not the other leaves a body pressing at full
+                     * strength and being pushed back at fifteen percent of it. That is not a crowd holding its
+                     * ground, it is a crowd being compressed, which is what it looked like.
+                     */
+                    float drive = Settled[index] != 0 ? SettledDriveScale : 1f;
+                    float speed = ResolveSpeed(index, position, heading, open * drive, out float achieved);
+
+                    velocity += new float3(heading.x, 0f, heading.y) * speed;
+
+                    /*
+                     * A body standing on real ground with no route to the goal is the exact case settling exists
+                     * for, and it was the one case that could never reach it. Stalling was only ever measured
+                     * inside the branch that follows a route, so a crowd whose every way is shut reported that all
+                     * of it still wanted to move, nothing seeded the settle, and the whole of it pressed at full
+                     * speed into itself for as long as the way stayed shut.
+                     *
+                     * Measured the same way as everywhere else, against progress along the heading rather than
+                     * against distance moved, so a body still working its way along a barrier towards a way round
+                     * keeps going and only one pressed against it gives up. Being shoved sideways by neighbours is
+                     * not progress and does not count as any.
+                     *
+                     * Left alone for a body off the described map, which is not stuck but recovering, and is making
+                     * exactly the progress it should be towards ground it can stand on.
+                     */
+                    if (onWalkable)
+                    {
+                        bool stalling = open > STEERING_EPSILON && achieved < open * StallSpeedFraction;
+                        float stalled = stalling ? previousStallTime + DeltaTime : 0f;
+
+                        StallTime[index] = stalled;
+                        Stalled[index] = (byte)(stalled >= StallSettleDelay ? 1 : 0);
+                    }
                 }
             }
 
             float3 step = velocity * DeltaTime;
             float3 next = position + step;
             int nextCell = Grid.IndexOf(next);
-            bool nextWalkable = nextCell >= 0 && Walkable[nextCell] != 0;
+            bool nextWalkable = Steppable(cell, nextCell);
 
             if (!nextWalkable && onWalkable)
             {
@@ -641,8 +716,8 @@ namespace MiHordeTraffic.Movement
                 int cellX = Grid.IndexOf(alongX);
                 int cellZ = Grid.IndexOf(alongZ);
 
-                bool okX = cellX >= 0 && Walkable[cellX] != 0;
-                bool okZ = cellZ >= 0 && Walkable[cellZ] != 0;
+                bool okX = Steppable(cell, cellX);
+                bool okZ = Steppable(cell, cellZ);
 
                 /*
                  * When both survive the longer one wins, which keeps a body sliding the way it was mostly going
@@ -672,7 +747,12 @@ namespace MiHordeTraffic.Movement
 
             if (nextWalkable)
             {
-                next.y = Height[nextCell];
+                /*
+                 * Read across the cells around the body rather than out of the one it is standing in. One reading
+                 * per cell makes the ground a staircase, level within a cell and a step at every boundary, and a
+                 * body being jostled across one of those boundaries pops between two heights every frame.
+                 */
+                next.y = HordeGroundHeight.At(Grid, Walkable, Height, next, nextCell);
 
                 /*
                  * Not written when the body is already there, and the saving is the write rather than the maths.

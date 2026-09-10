@@ -15,7 +15,15 @@ namespace MiHordeTraffic.Separation
     {
 
         [Header("Scheduling")]
-        [SerializeField, Min(1)] private int updateInterval = 1;
+        /*
+         * A rate rather than a count of frames, because a count of frames is not a setting anyone can reason about.
+         * Every third frame is twenty solves a second at sixty and sixty seven at two hundred, so the same asset
+         * gave a different crowd on a different machine, and a different one in the editor than in a build.
+         *
+         * Zero means every frame, which is what a count of one meant and is still the right default.
+         */
+        [Tooltip("How many times a second the crowd is solved. 0 solves every frame. Lower is cheaper and softer.")]
+        [SerializeField, Min(0f)] private float updatesPerSecond = 0f;
         [SerializeField] private SeparationCompletionMode completionMode = SeparationCompletionMode.NEXT_FRAME;
         [SerializeField] private bool reusePushBetweenTicks = true;
 
@@ -42,9 +50,9 @@ namespace MiHordeTraffic.Separation
         [SerializeField, Range(0f, .5f)] private float overlapTolerance = .04f;
 
         /// <summary>
-        /// How many frames pass between recalculations. 1 is every frame, 3 is every third frame.
+        /// How many times a second the crowd is solved, or zero to solve every frame.
         /// </summary>
-        public int UpdateInterval => updateInterval;
+        public float UpdatesPerSecond => updatesPerSecond;
 
         /// <summary>
         /// When the scheduled job is joined back to the main thread.
@@ -170,7 +178,7 @@ namespace MiHordeTraffic.Separation
         /// <returns>The current tuning.</returns>
         public SeparationTuning CaptureTuning() => new SeparationTuning
         {
-            UpdateInterval = updateInterval,
+            UpdatesPerSecond = updatesPerSecond,
             ReusePushBetweenTicks = reusePushBetweenTicks,
             CellSize = cellSize,
             DetourEnabled = detourEnabled,
@@ -188,7 +196,7 @@ namespace MiHordeTraffic.Separation
         /// <param name="tuning">The values to apply.</param>
         public void ApplyTuning(SeparationTuning tuning)
         {
-            updateInterval = Mathf.Max(1, tuning.UpdateInterval);
+            updatesPerSecond = Mathf.Max(0f, tuning.UpdatesPerSecond);
             reusePushBetweenTicks = tuning.ReusePushBetweenTicks;
             cellSize = Mathf.Max(0f, tuning.CellSize);
             detourEnabled = tuning.DetourEnabled;

@@ -20,7 +20,7 @@ namespace MiHordeTraffic.Separation
     public struct SeparationTuning
     {
 
-        [Min(1)] public int UpdateInterval;
+        [Min(0f)] public float UpdatesPerSecond;
         public bool ReusePushBetweenTicks;
         [Min(0f)] public float CellSize;
 

@@ -29,7 +29,11 @@ namespace MiHordeTraffic.Diagnostics
     public class HordeFlowAdvisor : MonoBehaviour
     {
 
-        private const float REBUILD_SHARE_LIMIT = .1f;
+        /*
+         * How much of the rebuild interval an expansion may take before the field cannot keep up with the schedule
+         * that asks for it. Three quarters, so it says something before the two cross rather than after.
+         */
+        private const float REBUILD_LATENCY_LIMIT = .75f;
         private const float CONGESTION_CELL_LIMIT = 40000f;
         private const float WALKABLE_FRACTION_LIMIT = .5f;
         private const float CROWDED_CELL_LIMIT = .75f;
@@ -116,8 +120,15 @@ namespace MiHordeTraffic.Diagnostics
         }
 
         /*
-         * The expansion is the one cost that is paid in lumps rather than spread, so it is measured as a share of
-         * the whole window. A rebuild that takes longer than a frame is fine four times a second and ruinous sixty.
+         * How long the expansion takes to arrive, against how often one is asked for. It costs the frame nothing,
+         * since it runs on a worker and the crowd reads the previous field until it lands, so what it can be too
+         * slow for is not the frame but the schedule: an expansion that takes longer than the interval means every
+         * field is stale before it arrives and the crowd is permanently steering off an older one.
+         *
+         * It used to be reported as a share of frame time, which was true while the expansion was joined on the
+         * spot and became nonsense the moment it stopped being. At a fifth of a second an expansion four times a
+         * second reads as eighty percent of the frame, so a scene doing exactly the right thing was told its field
+         * was ruinous and advised to undo it.
          */
         private void CheckField(float seconds, int frames, float frameMilliseconds)
         {
@@ -131,14 +142,17 @@ namespace MiHordeTraffic.Diagnostics
 
             if (builds <= 0) return;
 
-            float spent = (float)(builds * driver.AverageBuildMilliseconds);
-            float share = spent / (seconds * 1000f);
+            float interval = driver.RebuildInterval * 1000f;
 
-            if (share < REBUILD_SHARE_LIMIT) return;
+            if (interval <= 0f) return;
+
+            float latency = (float)driver.AverageBuildMilliseconds;
+
+            if (latency < interval * REBUILD_LATENCY_LIMIT) return;
 
             ISSUES.Add(new HordeSceneIssue(HordeIssueSeverity.ADVICE,
-                $"Field rebuilds are {share * 100f:F0}% of frame time ({builds} in {seconds:F0}s at {driver.AverageBuildMilliseconds:F2} ms, frame is {frameMilliseconds:F1} ms).",
-                "Set the driver's Refresh Rate to LAZY, or raise Cell Size, which cuts rebuild cost quadratically."));
+                $"The field takes {latency:F0} ms to expand against a rebuild interval of {interval:F0} ms, so it is most of a rebuild out of date by the time it arrives ({builds} in {seconds:F0}s).",
+                "This costs the frame nothing, the crowd just reacts late. Raise Cell Size, which cuts expansion time quadratically, or set Refresh Rate to LAZY so the interval matches what the grid can manage."));
         }
 
         private void CheckScheduler()

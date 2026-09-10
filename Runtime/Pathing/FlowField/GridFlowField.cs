@@ -274,7 +274,12 @@ namespace MiHordeTraffic.Pathing.FlowField
         {
             NativeArray<byte> source = new NativeArray<byte>(_walkable, Allocator.Temp);
 
-            int reach = (int)math.ceil(clearance / Grid.CellSize);
+            /*
+             * The half cell is part of the reach because the gap below is measured to the near edge of a cell
+             * rather than to its centre, so ground within the clearance can sit a cell further out than dividing
+             * alone suggests.
+             */
+            int reach = (int)math.ceil(clearance / Grid.CellSize + .5f);
             float clearanceSquared = clearance * clearance;
             int walkable = 0;
 
@@ -293,9 +298,19 @@ namespace MiHordeTraffic.Pathing.FlowField
                     bool blocked = !Grid.Contains(neighbour) || source[Grid.IndexOf(neighbour)] == 0;
                     if (!blocked) continue;
 
-                    float2 offset = new float2(x, z) * Grid.CellSize;
+                    /*
+                     * Measured to the near edge of the unwalkable cell rather than to its centre, because what a
+                     * body wants clearance from is where the ground stops, and that is half a cell nearer than the
+                     * middle of the cell describing it.
+                     *
+                     * Centre to centre overstated every gap by that half cell, and at the default settings it
+                     * overstated it past the setting itself: a metre of cells with half a metre of clearance
+                     * compared one against a half and eroded nothing at all, so the field silently did nothing for
+                     * anyone who had not raised it above their cell size.
+                     */
+                    float2 gap = math.max(math.abs(new float2(x, z)) - .5f, 0f) * Grid.CellSize;
 
-                    if (math.lengthsq(offset) <= clearanceSquared) keep = false;
+                    if (math.lengthsq(gap) <= clearanceSquared) keep = false;
                 }
 
                 if (keep) walkable++;
@@ -314,7 +329,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <param name="mode">How the cost field is turned into a direction.</param>
         /// <param name="goalSearchRadius">How many cells out to look for walkable ground when the goal is not on any.</param>
         /// <returns>True when an expansion was scheduled.</returns>
-        public bool Schedule(float3 goal, FlowDirectionMode mode = FlowDirectionMode.GRADIENT, int goalSearchRadius = 8)
+        public bool Schedule(float3 goal, FlowDirectionMode mode = FlowDirectionMode.GRADIENT, int goalSearchRadius = 8, float maximumSlope = 0f)
         {
             if (_scheduled || !IsBaked) return false;
 
@@ -327,6 +342,8 @@ namespace MiHordeTraffic.Pathing.FlowField
                 Grid = Grid,
                 Walkable = _walkable,
                 Cost = _costSnapshot,
+                Height = _height,
+                MaximumSlope = maximumSlope,
                 Integration = _integrationBack,
                 Heap = _heap,
                 GoalIndex = _goalIndex,

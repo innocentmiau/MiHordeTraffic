@@ -47,15 +47,15 @@ namespace MiHordeTraffic.Benchmark
         [SerializeField] private HordeQualityPreset[] qualityPresets =
         {
             new HordeQualityPreset("A no settling",
-                new SeparationTuning { UpdateInterval = 1, ReusePushBetweenTicks = true, CellSize = 0f, BlockingEnabled = false, BlockingNeighbours = 3, SettledPushScale = .15f },
+                new SeparationTuning { UpdatesPerSecond = 0f, ReusePushBetweenTicks = true, CellSize = 0f, BlockingEnabled = false, BlockingNeighbours = 3, SettledPushScale = .15f },
                 new SchedulerTuning { RepathsPerFrame = 150, NearInterval = .1f, FarInterval = 1f, NearDistance = 10f, FarDistance = 60f, GuaranteedInterval = 3f }),
 
             new HordeQualityPreset("B settling on",
-                new SeparationTuning { UpdateInterval = 1, ReusePushBetweenTicks = true, CellSize = 0f, BlockingEnabled = true, BlockingNeighbours = 3, SettledPushScale = .15f },
+                new SeparationTuning { UpdatesPerSecond = 0f, ReusePushBetweenTicks = true, CellSize = 0f, BlockingEnabled = true, BlockingNeighbours = 3, SettledPushScale = .15f },
                 new SchedulerTuning { RepathsPerFrame = 150, NearInterval = .1f, FarInterval = 1f, NearDistance = 10f, FarDistance = 60f, GuaranteedInterval = 3f }),
 
             new HordeQualityPreset("C settling + lean paths",
-                new SeparationTuning { UpdateInterval = 2, ReusePushBetweenTicks = true, CellSize = 0f, BlockingEnabled = true, BlockingNeighbours = 2, SettledPushScale = .05f },
+                new SeparationTuning { UpdatesPerSecond = 30f, ReusePushBetweenTicks = true, CellSize = 0f, BlockingEnabled = true, BlockingNeighbours = 2, SettledPushScale = .05f },
                 new SchedulerTuning { RepathsPerFrame = 50, NearInterval = .25f, FarInterval = 3f, NearDistance = 10f, FarDistance = 60f, GuaranteedInterval = 8f })
         };
 

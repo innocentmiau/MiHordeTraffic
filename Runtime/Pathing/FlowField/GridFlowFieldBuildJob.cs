@@ -37,6 +37,25 @@ namespace MiHordeTraffic.Pathing.FlowField
         [ReadOnly] public NativeArray<byte> Walkable;
         [ReadOnly] public NativeArray<float> Cost;
 
+        /*
+         * The navmesh height under each cell, which the bake already sampled and nothing has ever read. Without it
+         * the expansion is measuring a map drawn flat: two cells a step apart cost a step apart whether the ground
+         * between them is level or a cliff face, so a crowd routes over a drop as happily as across a floor and a
+         * hill costs exactly what going round it costs.
+         */
+        [ReadOnly] public NativeArray<float> Height;
+
+        /*
+         * Rise over run, above which two cells are not connected at all. Zero leaves every pair connected and only
+         * prices the climb, which is the conservative reading of an existing map.
+         *
+         * It exists because a flat grid cannot see a ledge. The navmesh on top of one and the navmesh at the foot
+         * of it are different surfaces, and they are neighbours in two dimensions, so the expansion will walk from
+         * one to the other for the price of a step. One is a genuine slope worth climbing and the other is a fall,
+         * and the only thing telling them apart is how much height the step covers.
+         */
+        public float MaximumSlope;
+
         public NativeArray<float> Integration;
         public NativeList<HeapEntry> Heap;
         public NativeArray<int> GoalIndex;
@@ -96,7 +115,18 @@ namespace MiHordeTraffic.Pathing.FlowField
                         if (!Grid.Contains(sideZ) || Walkable[Grid.IndexOf(sideZ)] == 0) continue;
                     }
 
-                    float step = (x != 0 && z != 0 ? DIAGONAL : 1f) * Grid.CellSize * Cost[index];
+                    /*
+                     * The real distance between the two cell centres rather than the distance on the map, so a
+                     * climb costs what a climb costs. A cell up one and along one is not a step of one, it is the
+                     * hypotenuse of both, and up one along a diagonal is the hypotenuse of that again. Nothing has
+                     * to be tuned for it: it falls out of the geometry the bake already measured.
+                     */
+                    float planar = (x != 0 && z != 0 ? DIAGONAL : 1f) * Grid.CellSize;
+                    float rise = Height[index] - Height[entry.Index];
+
+                    if (MaximumSlope > 0f && math.abs(rise) > MaximumSlope * planar) continue;
+
+                    float step = math.sqrt(planar * planar + rise * rise) * Cost[index];
                     float total = entry.Cost + step;
 
                     if (total >= Integration[index]) continue;

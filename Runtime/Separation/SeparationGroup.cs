@@ -97,7 +97,7 @@ namespace MiHordeTraffic.Separation
         private bool _pushFresh;
         private int _capacity;
         private int _scheduledCount;
-        private int _framesSinceTick;
+        private float _sinceTick;
         private int _resyncCursor;
         private float _largestRadius;
 
@@ -244,17 +244,29 @@ namespace MiHordeTraffic.Separation
         /// </summary>
         public void TickIfDue()
         {
-            _framesSinceTick++;
-            if (_framesSinceTick < _settings.UpdateInterval) return;
+            _sinceTick += Time.deltaTime;
 
-            _framesSinceTick = 0;
+            float rate = _settings.UpdatesPerSecond;
+
+            if (rate > 0f && _sinceTick < 1f / rate) return;
+
+            /*
+             * The solve is handed the time since the last one rather than the time since the last frame. It caps
+             * how much overlap a single pass may undo, so feeding it one frame while it runs every third meant
+             * raising the interval did not merely thin the solving out, it weakened it: each pass still corrected
+             * one frame's worth and there were a third as many of them. The crowd went soft rather than choppy,
+             * which is why it looked like the setting was working.
+             */
+            float step = _sinceTick;
+
+            _sinceTick = 0f;
 
             using (TICK_MARKER.Auto())
             {
                 EnsureCapacity(_bodies.Count);
                 SampleRadii();
 
-                Schedule(new TransformSampleJob { Positions = _positionsBack }.Schedule(_transforms), Time.deltaTime);
+                Schedule(new TransformSampleJob { Positions = _positionsBack }.Schedule(_transforms), step);
             }
         }
 

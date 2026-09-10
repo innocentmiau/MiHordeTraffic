@@ -53,8 +53,30 @@ namespace MiHordeTraffic.Pathing.FlowField
         [SerializeField, Min(.1f)] private float cellSize = 1f;
         [Tooltip("Metres above and below a cell centre to look for the navmesh when baking.")]
         [SerializeField, Min(.1f)] private float sampleHeight = 4f;
-        [Tooltip("Metres a cell must be from unwalkable ground to count as walkable, so bodies do not hug walls.")]
-        [SerializeField, Min(0f)] private float edgeClearance = .5f;
+        /*
+         * Zero by default now, because with Sample Accuracy at one it is asking for something the navmesh has
+         * already done. Unity insets a navmesh by the agent radius it was baked for, from walls and from ledges
+         * alike, so a cell that only exists because its centre is on the navmesh is a cell that centre already fits
+         * on. Eroding again applies the same clearance twice and takes real ground away for it, which on a corridor
+         * a couple of cells wide takes the middle out.
+         *
+         * Worth raising only when bodies are wider than the agent the navmesh was baked for, which is the one case
+         * the inset does not cover, and worth checking those two numbers against each other before assuming it.
+         */
+        [Tooltip("Metres a cell must be from unwalkable ground to count as walkable. Usually 0: with Sample Accuracy at 1 the navmesh's own agent radius inset already did this. Raise it only if bodies are wider than the agent the navmesh was baked for.")]
+        [SerializeField, Min(0f)] private float edgeClearance = 0f;
+
+        /*
+         * The same idea for structures put down at runtime, and a genuinely different number, which is why it is no
+         * longer the same field. Nothing insets a building: the navmesh has never heard of it, so what the bake
+         * did for walls has not been done here and there is nothing to be redundant with.
+         *
+         * Without it a footprint blocks the cells it covers and no more, so a body can stand with its centre in the
+         * cell next door and the last part of a cell between it and the wall. At a metre a cell that is about half
+         * a metre of gap for a body that wants half a metre of room, which is touching.
+         */
+        [Tooltip("Metres blocked around a runtime obstacle on top of its own footprint, so bodies do not stand against a building. Roughly a body radius.")]
+        [SerializeField, Min(0f)] private float obstacleClearance = .5f;
 
         /*
          * The bake asks the navmesh for the nearest surface to each cell centre, and that call answers however far
@@ -109,6 +131,15 @@ namespace MiHordeTraffic.Pathing.FlowField
          * onto eight headings, which is correct for a game built on a grid and reads as robotic in one that is not.
          */
         [SerializeField] private FlowDirectionMode directionMode = FlowDirectionMode.GRADIENT;
+
+        /*
+         * Off by default, because switching it on can disconnect ground an existing map was relying on and that is
+         * not a thing to do to somebody without being asked. The height cost below it needs no setting and is
+         * always on: it only ever makes a climb cost more than the flat route it was already being compared
+         * against, which is the answer everyone expected in the first place.
+         */
+        [Tooltip("Rise over run above which two cells stop being connected, so a crowd cannot walk off a ledge as though it were a step. 1 is 45 degrees, which is Unity's own navmesh limit. 0 leaves everything connected and only prices the climb.")]
+        [SerializeField, Min(0f)] private float maximumSlope = 0f;
 
         /*
          * A centimetre, squared. Below it a goal has not moved, it is being described by a float.
@@ -383,6 +414,21 @@ namespace MiHordeTraffic.Pathing.FlowField
         public float SampleAccuracy => sampleAccuracy;
 
         /// <summary>
+        /// Seconds the field may go unexpanded while the target sits still, which is also the longest it should take to expand.
+        /// </summary>
+        public float RebuildInterval => rebuildInterval;
+
+        /// <summary>
+        /// Metres blocked around a runtime obstacle on top of its own footprint.
+        /// </summary>
+        public float ObstacleClearance => obstacleClearance;
+
+        /// <summary>
+        /// Rise over run above which two cells stop being connected, or zero when every pair is connected.
+        /// </summary>
+        public float MaximumSlope => maximumSlope;
+
+        /// <summary>
         /// Says the field is out of date, so the next interval actually rebuilds it rather than skipping.
         /// </summary>
         public void MarkDirty() => _dirty = true;
@@ -441,7 +487,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             {
                 HordeBlockRequest request = _blocks[i];
 
-                if (!_field.ApplyBlock(request.Area, edgeClearance, request.Delta)) continue;
+                if (!_field.ApplyBlock(request.Area, obstacleClearance, request.Delta)) continue;
 
                 /*
                  * Only the requests that asked for it. A batch holding one static building and twenty carts has to
@@ -527,7 +573,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             _lastGoal = goal;
             _hasLastGoal = true;
 
-            if (!_field.Schedule(goal, directionMode)) return false;
+            if (!_field.Schedule(goal, directionMode, 8, maximumSlope)) return false;
 
             _dirty = false;
             _buildStart = Stopwatch.GetTimestamp();
