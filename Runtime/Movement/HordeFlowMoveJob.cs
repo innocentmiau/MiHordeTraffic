@@ -104,6 +104,12 @@ namespace MiHordeTraffic.Movement
         [ReadOnly] public NativeArray<byte> Walkable;
         [ReadOnly] public NativeArray<float> Integration;
         [ReadOnly] public NativeArray<float> Height;
+
+        /*
+         * Which cells are shut. The expansion routes through these so that a crowd is led to a door rather than to
+         * whatever happens to be nearest the goal, and this is the other half of that: the door holds.
+         */
+        [ReadOnly] public NativeArray<int> Gated;
         [ReadOnly] public NativeArray<float3> Push;
         [ReadOnly] public NativeArray<float> Speed;
         [ReadOnly] public NativeArray<float> Density;
@@ -271,7 +277,12 @@ namespace MiHordeTraffic.Movement
 
                     int index = Grid.IndexOf(cell);
 
-                    if (Walkable[index] == 0) continue;
+                    /*
+                     * A gate is no use to a body looking for somewhere to stand. It routes, which is what makes a
+                     * crowd queue at one, and nothing may step into it, so rescuing onto one would leave a body
+                     * steering at ground it can never reach.
+                     */
+                    if (Walkable[index] == 0 || Gated[index] > 0) continue;
 
                     float3 centre = Grid.CentreOf(cell);
                     float3 offset = new float3(centre.x - position.x, 0f, centre.z - position.z);
@@ -322,7 +333,7 @@ namespace MiHordeTraffic.Movement
         /// </summary>
         private bool Steppable(int from, int to)
         {
-            if (to < 0 || Walkable[to] == 0) return false;
+            if (to < 0 || Walkable[to] == 0 || Gated[to] > 0) return false;
 
             if (MaximumRise <= 0f || from < 0 || to == from) return true;
 
@@ -459,7 +470,15 @@ namespace MiHordeTraffic.Movement
              * route is gone, and handing it the same exemption let it walk straight at the goal through everything
              * in between.
              */
-            bool onWalkable = cell >= 0 && Walkable[cell] != 0;
+            /*
+             * A gate is ground to route towards and never ground to stand on, so a body caught inside one when it
+             * shut has no footing even though the cell is still walkable. Gates stay walkable on purpose, which is
+             * what lets the expansion reach through them, and it also meant a body in one read as perfectly placed:
+             * it followed the flow, which at a gate points onward through it, and had every step refused. A solid
+             * obstacle closing on a body takes its walkability away and the recovery walks it out, and this is the
+             * same thing happening to the same body for a reason the same code could not see.
+             */
+            bool onWalkable = cell >= 0 && Walkable[cell] != 0 && Gated[cell] == 0;
             bool onGrid = onWalkable && Integration[cell] != float.MaxValue;
             /*
              * Faded out over a band rather than switched off at a line. A hard threshold is a limit cycle waiting

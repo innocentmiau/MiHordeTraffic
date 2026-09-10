@@ -711,6 +711,7 @@ namespace MiHordeTraffic.Movement
                 Mode = driver.DirectionMode,
                 MaximumRise = driver.MaximumSlope * field.Grid.CellSize,
                 Walkable = field.Walkable,
+                Gated = field.Gated,
                 Integration = field.Integration,
                 Height = field.Height,
                 Push = _push,

@@ -109,7 +109,11 @@ namespace MiHordeTraffic.Spawning
 
                     int index = grid.IndexOf(cell);
 
-                    if (field.Walkable[index] == 0) continue;
+                    /*
+                     * A gate routes but cannot be stood in, so a body put down on one would be inside ground it is
+                     * not allowed to occupy and would have every step out of it refused.
+                     */
+                    if (field.Walkable[index] == 0 || field.Gated[index] > 0) continue;
 
                     /*
                      * Skipped before the first expansion has run, when every cell reads as unreachable and refusing

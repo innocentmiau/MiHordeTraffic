@@ -46,6 +46,15 @@ namespace MiHordeTraffic.Pathing.FlowField
         [ReadOnly] public NativeArray<float> Height;
 
         /*
+         * Cells that are shut. They stay walkable so the expansion still reaches through them, and cost a great
+         * deal so that any genuinely open way wins. Where every way is shut the crowd still gets an answer, and it
+         * is the nearest door rather than nothing at all, which is what sends a crowd to stand at a mountain.
+         */
+        [ReadOnly] public NativeArray<int> Gated;
+
+        public float GatePenalty;
+
+        /*
          * Rise over run, above which two cells are not connected at all. Zero leaves every pair connected and only
          * prices the climb, which is the conservative reading of an existing map.
          *
@@ -126,7 +135,8 @@ namespace MiHordeTraffic.Pathing.FlowField
 
                     if (MaximumSlope > 0f && math.abs(rise) > MaximumSlope * planar) continue;
 
-                    float step = math.sqrt(planar * planar + rise * rise) * Cost[index];
+                    float penalty = Gated[index] > 0 ? GatePenalty : 1f;
+                    float step = math.sqrt(planar * planar + rise * rise) * Cost[index] * penalty;
                     float total = entry.Cost + step;
 
                     if (total >= Integration[index]) continue;

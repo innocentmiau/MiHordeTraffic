@@ -142,6 +142,18 @@ namespace MiHordeTraffic.Pathing.FlowField
         [SerializeField, Min(0f)] private float maximumSlope = 0f;
 
         /*
+         * How many cells of walking a shut gate is worth, which is the whole of what makes a crowd wait at one
+         * rather than walk round to a way that is not there.
+         *
+         * High so that any genuinely open route wins, and finite so that when every route is shut the crowd still
+         * gets an answer. That answer is the nearest door, which is the point: with nothing routable at all a
+         * crowd falls back to steering at the goal and presses against whatever lies between, and a mountain is as
+         * likely to be in the way as the gate.
+         */
+        [Tooltip("How many cells of detour a closed gate is worth. High enough that any open route wins, finite so that when every route is shut the crowd still queues at the nearest gate.")]
+        [SerializeField, Min(1f)] private float gatePenalty = 100f;
+
+        /*
          * A centimetre, squared. Below it a goal has not moved, it is being described by a float.
          */
         private const float STATIONARY_EPSILON_SQUARED = .0001f;
@@ -448,16 +460,18 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// </summary>
         /// <param name="area">The world area the structure covers.</param>
         /// <param name="updateRouting">Whether the field is expanded again so the crowd routes around it, rather than only walking into it and sliding past.</param>
-        public void BlockArea(Bounds area, bool updateRouting = true) =>
-            _blocks.Add(new HordeBlockRequest { Area = area, Delta = 1, UpdateRouting = updateRouting });
+        /// <param name="kind">Whether the ground is taken away or merely shut, so a crowd still routes to a gate.</param>
+        public void BlockArea(Bounds area, bool updateRouting = true, HordeBlockKind kind = HordeBlockKind.SOLID) =>
+            _blocks.Add(new HordeBlockRequest { Area = area, Delta = 1, UpdateRouting = updateRouting, Kind = kind });
 
         /// <summary>
         /// Gives back ground taken by a matching BlockArea, if the bake found it walkable to begin with.
         /// </summary>
         /// <param name="area">The same world area that was blocked.</param>
         /// <param name="updateRouting">Whether the field is expanded again for it.</param>
-        public void UnblockArea(Bounds area, bool updateRouting = true) =>
-            _blocks.Add(new HordeBlockRequest { Area = area, Delta = -1, UpdateRouting = updateRouting });
+        /// <param name="kind">The same kind it was blocked with, or the counts will not come back to zero.</param>
+        public void UnblockArea(Bounds area, bool updateRouting = true, HordeBlockKind kind = HordeBlockKind.SOLID) =>
+            _blocks.Add(new HordeBlockRequest { Area = area, Delta = -1, UpdateRouting = updateRouting, Kind = kind });
 
         /// <summary>
         /// How many block or unblock requests are waiting for a frame with no expansion in flight.
@@ -487,7 +501,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             {
                 HordeBlockRequest request = _blocks[i];
 
-                if (!_field.ApplyBlock(request.Area, obstacleClearance, request.Delta)) continue;
+                if (!_field.ApplyBlock(request.Area, obstacleClearance, request.Delta, request.Kind)) continue;
 
                 /*
                  * Only the requests that asked for it. A batch holding one static building and twenty carts has to
@@ -573,7 +587,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             _lastGoal = goal;
             _hasLastGoal = true;
 
-            if (!_field.Schedule(goal, directionMode, 8, maximumSlope)) return false;
+            if (!_field.Schedule(goal, directionMode, 8, maximumSlope, gatePenalty)) return false;
 
             _dirty = false;
             _buildStart = Stopwatch.GetTimestamp();

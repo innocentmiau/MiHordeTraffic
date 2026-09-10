@@ -47,6 +47,17 @@ namespace MiHordeTraffic.Pathing.FlowField
          */
         private NativeArray<byte> _walkableBaked;
         private NativeArray<int> _blocked;
+
+        /*
+         * Cells that are shut rather than gone. They stay walkable, so the expansion routes through them and every
+         * cell behind one keeps a real cost to reach the goal, and the mover refuses to step into them, so nobody
+         * actually passes. That pair is the whole trick: the field leads a crowd to the door and the door holds it.
+         *
+         * Kept apart from the blocked count because they are opposite answers. Blocking takes ground away and
+         * nothing should ever route at it; gating leaves the ground and makes it expensive, which is the only way
+         * to say closed to something that only understands distance.
+         */
+        private NativeArray<int> _gated;
         private NativeArray<float> _cost;
         private NativeArray<float> _integration;
         private NativeArray<float> _height;
@@ -142,9 +153,14 @@ namespace MiHordeTraffic.Pathing.FlowField
         public NativeArray<float> Density => _density;
 
         /// <summary>
-        /// Per cell walkability, as sampled at bake time.
+        /// Per cell walkability, as sampled at bake time and with solid runtime obstacles taken out of it.
         /// </summary>
         public NativeArray<byte> Walkable => _walkable;
+
+        /// <summary>
+        /// How many gates cover each cell. Above zero the cell routes but cannot be walked into.
+        /// </summary>
+        public NativeArray<int> Gated => _gated;
 
         /// <summary>
         /// Per cell navmesh height, for putting bodies on the ground without asking the navmesh again.
@@ -190,6 +206,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             _walkable = new NativeArray<byte>(count, Allocator.Persistent);
             _walkableBaked = new NativeArray<byte>(count, Allocator.Persistent);
             _blocked = new NativeArray<int>(count, Allocator.Persistent);
+            _gated = new NativeArray<int>(count, Allocator.Persistent);
             _cost = new NativeArray<float>(count, Allocator.Persistent);
             _costSnapshot = new NativeArray<float>(count, Allocator.Persistent);
             _integration = new NativeArray<float>(count, Allocator.Persistent);
@@ -329,7 +346,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <param name="mode">How the cost field is turned into a direction.</param>
         /// <param name="goalSearchRadius">How many cells out to look for walkable ground when the goal is not on any.</param>
         /// <returns>True when an expansion was scheduled.</returns>
-        public bool Schedule(float3 goal, FlowDirectionMode mode = FlowDirectionMode.GRADIENT, int goalSearchRadius = 8, float maximumSlope = 0f)
+        public bool Schedule(float3 goal, FlowDirectionMode mode = FlowDirectionMode.GRADIENT, int goalSearchRadius = 8, float maximumSlope = 0f, float gatePenalty = 100f)
         {
             if (_scheduled || !IsBaked) return false;
 
@@ -343,6 +360,8 @@ namespace MiHordeTraffic.Pathing.FlowField
                 Walkable = _walkable,
                 Cost = _costSnapshot,
                 Height = _height,
+                Gated = _gated,
+                GatePenalty = math.max(gatePenalty, 1f),
                 MaximumSlope = maximumSlope,
                 Integration = _integrationBack,
                 Heap = _heap,
@@ -429,8 +448,9 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <param name="area">World area the structure covers.</param>
         /// <param name="clearance">Extra margin to block around it, matching the bake's edge clearance.</param>
         /// <param name="delta">One to block, minus one to unblock.</param>
+        /// <param name="kind">Whether the ground is taken away or merely shut.</param>
         /// <returns>True when the grid changed and the field needs expanding again.</returns>
-        public bool ApplyBlock(Bounds area, float clearance, int delta)
+        public bool ApplyBlock(Bounds area, float clearance, int delta, HordeBlockKind kind = HordeBlockKind.SOLID)
         {
             if (!IsBaked || delta == 0) return false;
 
@@ -450,6 +470,17 @@ namespace MiHordeTraffic.Pathing.FlowField
             for (int x = min.x; x <= max.x; x++)
             {
                 int index = Grid.IndexOf(new int2(x, z));
+
+                if (kind == HordeBlockKind.GATE)
+                {
+                    /*
+                     * Walkability is left alone on purpose. A gate that took the ground away would be a wall, and
+                     * the expansion would stop reaching past it, which is the behaviour this exists to replace.
+                     */
+                    _gated[index] = math.max(_gated[index] + delta, 0);
+                    changed = true;
+                    continue;
+                }
 
                 _blocked[index] = math.max(_blocked[index] + delta, 0);
 
@@ -525,6 +556,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             if (_walkable.IsCreated) _walkable.Dispose();
             if (_walkableBaked.IsCreated) _walkableBaked.Dispose();
             if (_blocked.IsCreated) _blocked.Dispose();
+            if (_gated.IsCreated) _gated.Dispose();
             if (_cost.IsCreated) _cost.Dispose();
             if (_costSnapshot.IsCreated) _costSnapshot.Dispose();
             if (_integration.IsCreated) _integration.Dispose();

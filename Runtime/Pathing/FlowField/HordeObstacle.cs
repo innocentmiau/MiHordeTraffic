@@ -27,6 +27,15 @@ namespace MiHordeTraffic.Pathing.FlowField
         [Tooltip("Offset of the footprint from this object's position.")]
         [SerializeField] private Vector3 centre = Vector3.zero;
 
+        /*
+         * Solid is a wall and a gate is a door, and the difference is where a crowd waits when it cannot get past.
+         * Solid ground is gone, so nothing routes at it and a blocked crowd presses against whatever else lies
+         * between it and the goal. A gate still routes, at a great price, so the crowd is led to it and queues
+         * there until it opens.
+         */
+        [Tooltip("SOLID is ground that is gone. GATE is ground that is shut, so the crowd still paths to it and waits there for it to open.")]
+        [SerializeField] private HordeBlockKind kind = HordeBlockKind.SOLID;
+
         private Bounds _applied;
         private bool _blocked;
 
@@ -65,7 +74,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             _applied = Resolve();
             _blocked = true;
 
-            driver.BlockArea(_applied);
+            driver.BlockArea(_applied, true, kind);
         }
 
         private void OnDisable()
@@ -78,7 +87,7 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             if (!driver) return;
 
-            driver.UnblockArea(_applied);
+            driver.UnblockArea(_applied, true, kind);
         }
 
         /*
@@ -101,7 +110,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         {
             Bounds area = Application.isPlaying && _blocked ? _applied : Resolve();
 
-            Gizmos.color = new Color(1f, .4f, .2f, .5f);
+            Gizmos.color = kind == HordeBlockKind.GATE ? new Color(.3f, .7f, 1f, .5f) : new Color(1f, .4f, .2f, .5f);
             Gizmos.DrawWireCube(area.center, area.size);
         }
 

@@ -39,5 +39,10 @@ namespace MiHordeTraffic.Pathing.FlowField
          */
         public bool UpdateRouting;
 
+        /// <summary>
+        /// Whether the ground is gone or merely shut, which decides whether the crowd still routes to it.
+        /// </summary>
+        public HordeBlockKind Kind;
+
     }
 }
