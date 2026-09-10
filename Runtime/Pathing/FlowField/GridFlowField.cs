@@ -83,6 +83,16 @@ namespace MiHordeTraffic.Pathing.FlowField
         private NativeArray<float> _integrationBack;
         private NativeArray<float> _costSnapshot;
 
+        /*
+         * Copied for the expansion for the same reason the cost is, and it took a worse failure to notice. The
+         * expansion reads walkability and gates for as long as it is in flight, so a structure going up or coming
+         * down could not edit them and had to wait for a frame with nothing running. On a grid where an expansion
+         * finishes inside the rebuild interval that is a wait of a few frames. On one where it does not, there is
+         * no such frame ever, and an obstacle switched off simply never came back.
+         */
+        private NativeArray<byte> _walkableSnapshot;
+        private NativeArray<int> _gatedSnapshot;
+
 
 #if UNITY_EDITOR
         /*
@@ -209,6 +219,8 @@ namespace MiHordeTraffic.Pathing.FlowField
             _gated = new NativeArray<int>(count, Allocator.Persistent);
             _cost = new NativeArray<float>(count, Allocator.Persistent);
             _costSnapshot = new NativeArray<float>(count, Allocator.Persistent);
+            _walkableSnapshot = new NativeArray<byte>(count, Allocator.Persistent);
+            _gatedSnapshot = new NativeArray<int>(count, Allocator.Persistent);
             _integration = new NativeArray<float>(count, Allocator.Persistent);
             _integrationBack = new NativeArray<float>(count, Allocator.Persistent);
             _height = new NativeArray<float>(count, Allocator.Persistent);
@@ -346,27 +358,29 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <param name="mode">How the cost field is turned into a direction.</param>
         /// <param name="goalSearchRadius">How many cells out to look for walkable ground when the goal is not on any.</param>
         /// <returns>True when an expansion was scheduled.</returns>
-        public bool Schedule(float3 goal, FlowDirectionMode mode = FlowDirectionMode.GRADIENT, int goalSearchRadius = 8, float maximumSlope = 0f, float gatePenalty = 100f)
+        public bool Schedule(HordeGoalArea area, FlowDirectionMode mode = FlowDirectionMode.GRADIENT, int goalSearchRadius = 8, float maximumSlope = 0f, float gatePenalty = 100f)
         {
             if (_scheduled || !IsBaked) return false;
 
             DirectionMode = mode;
 
             NativeArray<float>.Copy(_cost, _costSnapshot, _cost.Length);
+            NativeArray<byte>.Copy(_walkable, _walkableSnapshot, _walkable.Length);
+            NativeArray<int>.Copy(_gated, _gatedSnapshot, _gated.Length);
 
             JobHandle build = new GridFlowFieldBuildJob
             {
                 Grid = Grid,
-                Walkable = _walkable,
+                Walkable = _walkableSnapshot,
                 Cost = _costSnapshot,
                 Height = _height,
-                Gated = _gated,
+                Gated = _gatedSnapshot,
                 GatePenalty = math.max(gatePenalty, 1f),
                 MaximumSlope = maximumSlope,
                 Integration = _integrationBack,
                 Heap = _heap,
                 GoalIndex = _goalIndex,
-                Goal = goal,
+                Area = area,
                 GoalSearchRadius = math.max(0, goalSearchRadius)
             }
             .Schedule();
@@ -531,6 +545,61 @@ namespace MiHordeTraffic.Pathing.FlowField
         public bool IsWalkable(int index) => _walkable[index] != 0;
 
         /// <summary>
+        /// Whether the bake found navmesh under a cell, ignoring anything blocking it since.
+        /// </summary>
+        /// <param name="index">Flat index of the cell.</param>
+        /// <returns>True when the cell was walkable when the grid was baked.</returns>
+        /*
+         * The difference between this and IsWalkable is the difference between the two reasons a cell is shut, and
+         * they need telling apart because only one of them can be reopened. Ground a runtime structure is standing
+         * on comes back when it leaves. Ground the bake never found does not, whatever is switched off, because
+         * there was never anything there to give back.
+         *
+         * That distinction is invisible in the field itself, where both are simply unwalkable, and mistaking the
+         * second for the first looks exactly like an obstacle refusing to clear.
+         */
+        public bool IsBakedWalkable(int index) => _walkableBaked[index] != 0;
+
+        /// <summary>
+        /// How many runtime obstacles are currently holding a cell.
+        /// </summary>
+        /// <param name="index">Flat index of the cell.</param>
+        /// <returns>The block count, which is zero when nothing is holding it.</returns>
+        public int BlockCountAt(int index) => _blocked[index];
+
+        /// <summary>
+        /// How many gates are currently holding a cell shut, which is zero for ordinary walkable ground.
+        /// </summary>
+        /// <param name="index">Flat index of the cell.</param>
+        /// <returns>The gate count, which is zero when the cell is open.</returns>
+        public int GateCountAt(int index) => _gated[index];
+
+        /// <summary>
+        /// Whether the bake found any walkable ground under an area, which decides whether blocking it can be undone.
+        /// </summary>
+        /// <param name="area">World area to test.</param>
+        /// <param name="clearance">Extra metres around it, matching what a block would use.</param>
+        /// <returns>True when at least one covered cell was walkable at bake time.</returns>
+        public bool HasBakedGround(Bounds area, float clearance)
+        {
+            if (!IsBaked) return false;
+
+            float margin = math.max(clearance, 0f);
+
+            int2 min = Grid.CellOf(new float3(area.min.x - margin, 0f, area.min.z - margin));
+            int2 max = Grid.CellOf(new float3(area.max.x + margin, 0f, area.max.z + margin));
+
+            min = math.max(min, int2.zero);
+            max = math.min(max, new int2(Grid.Width - 1, Grid.Height - 1));
+
+            for (int z = min.y; z <= max.y; z++)
+            for (int x = min.x; x <= max.x; x++)
+                if (_walkableBaked[Grid.IndexOf(new int2(x, z))] != 0) return true;
+
+            return false;
+        }
+
+        /// <summary>
         /// Joins anything outstanding and frees every buffer.
         /// </summary>
         public void Dispose()
@@ -559,6 +628,8 @@ namespace MiHordeTraffic.Pathing.FlowField
             if (_gated.IsCreated) _gated.Dispose();
             if (_cost.IsCreated) _cost.Dispose();
             if (_costSnapshot.IsCreated) _costSnapshot.Dispose();
+            if (_walkableSnapshot.IsCreated) _walkableSnapshot.Dispose();
+            if (_gatedSnapshot.IsCreated) _gatedSnapshot.Dispose();
             if (_integration.IsCreated) _integration.Dispose();
             if (_integrationBack.IsCreated) _integrationBack.Dispose();
             if (_height.IsCreated) _height.Dispose();

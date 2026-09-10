@@ -27,6 +27,7 @@ Video: https://www.youtube.com/watch?v=vscjLy909bU
 - **Reactive separation.** Jobified, Burst, spatial hashed. Replaces built in local avoidance.
 - **Settling.** A crowd around a target comes to rest instead of churning.
 - **Runtime obstacles and gates.** Buildings block ground without re-baking; gates hold a queue until they open.
+- **Shaped targets.** A box or sphere goal, so a crowd surrounds a building instead of queueing at one corner.
 - **Terrain height.** Hills cost more than flat ground; ledges can be refused.
 - **Freeze and resume.** A frozen body costs nothing and still occupies its ground.
 - **Runtime technique switching**, so you can measure this against stock `NavMeshAgent` on the same crowd.
@@ -63,6 +64,32 @@ agent.Freeze();                                       // stop one, keep its plac
 agent.Resume();
 agent.SetSpeed(4f);
 ```
+
+---
+
+## Targets
+
+The driver's **Target** is a point by default: one cell is seeded and the whole crowd walks to it. Right for chasing a player, wrong for anything with a footprint, where it leaves a building mobbed on one face and untouched on the other three.
+
+Put **`HordeTarget`** on the target to give it a size.
+
+| Shape | Bodies arrive |
+| --- | --- |
+| `POINT` | at one cell (default when there is no component) |
+| `BOX` | along its edges |
+| `SPHERE` | around its rim |
+
+**Size** comes from a `Collider` if you leave it at zero. The whole edge is seeded at once, so bodies approach from whichever side they came from. It costs nothing extra: the expansion still settles each cell once.
+
+**Arrive Radius** and attack range are measured from the **edge** of the shape, not its centre.
+
+### Solid targets
+
+Add a **`HordeObstacle`** set to `SOLID` alongside it so bodies cannot be pushed inside. Steps into blocked ground are refused whether a body walked there or was shoved, so the crowd packs against the wall and slides along it.
+
+The field seeds the first walkable ring **around** the building, so it still routes correctly with its own cells blocked.
+
+Keep **Arrive Radius** and attack range above the driver's **Obstacle Clearance**. Clearance decides how close a body can physically get; if range is smaller than that, nothing ever arrives and nothing ever attacks, with nothing in the console to say why.
 
 ---
 
@@ -232,7 +259,8 @@ Markers are stripped from non development builds, and the report says so rather 
 
 - **One walkable surface per column.** No stacked floors or bridges over ground.
 - **XZ only.** Separation supports `XY` and `FULL_3D`; the field does not.
-- **One goal at a time.** The whole crowd expands from a single target.
+- **One goal at a time.** The whole crowd expands from a single target, though that target can have a shape.
+- **No routing to unreachable goals.** A crowd sealed off from the target holds position rather than walking to the closest point it can reach. **Unreachable Goal** switches it back to pressing towards the target.
 - **Baked walkability.** Level geometry changes need a re-bake; runtime obstacles do not.
 
 ---
@@ -242,6 +270,7 @@ Markers are stripped from non development builds, and the report says so rather 
 - Layered grid, for surfaces above each other
 - 2D on the XY plane
 - Multiple goals, one field each, sharing the grid
+- Walk to the nearest reachable point when the goal is cut off
 - Incremental expansion instead of full rebuilds
 - Development build profiling
 

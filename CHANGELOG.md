@@ -5,6 +5,46 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0]
+
+### Upgrading
+
+**`BlockArea` and `UnblockArea` take the kind as their second argument**, ahead of the routing flag. It used to trail both defaults, which made it the easiest argument in the pair to leave off, and leaving it off on the release half of a gate is silent and permanent: the solid count is decremented instead, floors at zero, and the gate is never given back. Call sites that passed only an area still compile and still mean `SOLID`. Any that passed `updateRouting` positionally will not compile, which is the point.
+
+**`GridFlowField.Schedule` takes a `HordeGoalArea` instead of a `float3`.** `HordeGoalArea.Point(position)` is the old behaviour exactly. Only relevant if you drive the field yourself.
+
+**Bodies with no route to the goal now hold position instead of walking at it.** A straight line at the goal is not a route, and the reason there is no route is usually something solid on exactly that bearing. Set **Unreachable Goal** to `APPROACH` on `HordeFlowMovement` to get the old behaviour back. This only covers ground genuinely sealed off: a target standing inside an obstacle still routes normally, because the expansion seeds from the nearest walkable ground to it.
+
+### Added
+
+- **`HordeTarget`**, which gives a goal a shape: `POINT`, `BOX` or `SPHERE`, with the size read from a `Collider`. The expansion seeds every walkable cell the shape covers rather than the single cell nearest its centre, so a crowd arrives at the nearest part of a building and surrounds it instead of funnelling onto one face. It is a multi source expansion and costs nothing extra, since each cell is still settled exactly once. A target with no component is a point and behaves as it always did. Arrival and the near goal steering blend measure against the shape's edge, so **Arrive Radius** becomes real standoff distance from a wall.
+
+- Shaped targets seed the first walkable ring **around** a target whose own cells are blocked, so a building can carry a `HordeTarget` and a `SOLID` `HordeObstacle` together. That combination is what stops a crowd pushing itself inside the thing it is attacking: a step into blocked ground is refused whether a body walked there or was shoved into it.
+
+- **Unreachable Goal** on `HordeFlowMovement`: `HOLD` or `APPROACH`, for what a crowd does when the goal cannot be reached from where it stands.
+
+- **`IsBakedWalkable`**, **`BlockCountAt`** and **`GateCountAt`** on `GridFlowField`, for telling apart the reasons a cell is shut.
+
+- A warning when a `SOLID` obstacle covers no ground the bake found walkable. It blocks nothing and switching it off opens nothing, which looks exactly like an obstacle refusing to clear. Almost always the building was present when the NavMesh was baked, so Unity carved a hole under it and the grid copied the hole. Editor and development builds only.
+
+### Changed
+
+- Unwalkable cells draw in two colours: **amber** where a runtime obstacle is holding ground, **red** where the bake never found any. Only one of those can be reopened, and they were indistinguishable.
+
+- **Gated cells are drawn.** They stay walkable by design, so they looked identical to open ground, and only the mover ever read the gate count. A stuck gate was the one failure in this package with no visible symptom other than a crowd standing still in front of a doorway the field was happily routing through.
+
+- `HordeObstacle` re-applies when its kind, size or offset is edited during play, instead of needing the object switched off and on again.
+
+### Fixed
+
+- **Obstacles never applied at all on a large grid.** Block and unblock requests waited for a frame with no expansion in flight, because the expansion reads the walkability they edit. When an expansion takes longer than the interval that asks for one, which a million cell grid does, there is no such frame ever: a building switched off never came back, for the rest of the session. The expansion now takes its own copy of walkability and gates, the same way it already copied cost, so blocking is applied the frame it is asked for.
+
+- **A queued block did not make a rebuild due.** Ground appearing or going away waited out the rest of the rebuild interval, and when the expansion was refused for one already being in flight the retry waited out another whole interval rather than coming back the next frame.
+
+- **Changing an obstacle's Kind while it was blocking shut its ground permanently.** Both obstacle components stored the area they blocked and then read the live `kind` field when releasing it, so blocking as a gate and releasing as a solid decremented the wrong counter and the gate count was never given back. Nothing showed it: the expansion routes through gates by design, so the field stayed open and drew open, and only the mover refused the step. They now remember what they blocked with.
+
+- **Attack range was measured from a target's centre** in MiHordeAnimation, so a crowd pressed against a wall of a large target stood half its width out of range and never swung.
+
 ## [0.5.0]
 
 ### Upgrading

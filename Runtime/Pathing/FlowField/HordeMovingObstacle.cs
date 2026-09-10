@@ -60,6 +60,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         [SerializeField] private bool updateRouting = false;
 
         private Bounds _applied;
+        private HordeBlockKind _appliedKind;
         private int4 _appliedCells;
         private float _countdown;
         private bool _blocked;
@@ -107,7 +108,7 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             if (!driver) return;
 
-            driver.UnblockArea(_applied, updateRouting, kind);
+            driver.UnblockArea(_applied, _appliedKind, updateRouting);
         }
 
         private void Update()
@@ -132,13 +133,14 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             if (_blocked && !force && cells.Equals(_appliedCells)) return;
 
-            if (_blocked) driver.UnblockArea(_applied, updateRouting, kind);
+            if (_blocked) driver.UnblockArea(_applied, _appliedKind, updateRouting);
 
             _applied = area;
+            _appliedKind = kind;
             _appliedCells = cells;
             _blocked = true;
 
-            driver.BlockArea(_applied, updateRouting, kind);
+            driver.BlockArea(_applied, _appliedKind, updateRouting);
         }
 
         /*

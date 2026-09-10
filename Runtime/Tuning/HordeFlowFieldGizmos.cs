@@ -79,9 +79,32 @@ namespace MiHordeTraffic.Tuning
                 {
                     if (!drawUnreachable) continue;
 
-                    Gizmos.color = new Color(1f, 0f, 0f, .25f);
+                    /*
+                     * Two colours, because there are two reasons and only one of them can be undone. Amber is
+                     * ground a runtime structure is holding, which comes back when it is switched off. Red is
+                     * ground the bake never found, which does not, and which looks identical to an obstacle that
+                     * refuses to clear until you can see that it was never the obstacle's ground to give.
+                     *
+                     * Nearly always that is a building that was in the scene when the navmesh was baked, so Unity
+                     * carved a hole under it and the grid faithfully copied the hole.
+                     */
+                    Gizmos.color = field.BlockCountAt(i) > 0
+                        ? new Color(1f, .6f, 0f, .35f)
+                        : new Color(1f, 0f, 0f, .25f);
                     Gizmos.DrawWireCube(centre, new Vector3(grid.CellSize * .8f, 0f, grid.CellSize * .8f));
                     continue;
+                }
+
+                /*
+                 * Gates are walkable, so without this they draw as ordinary ground and a cell that is shut looks
+                 * exactly like a cell that is open. Only the mover reads the gate count, which made a stuck gate
+                 * the one thing in this system with no visible symptom other than a crowd standing still in front
+                 * of a doorway the field is quite happily routing through.
+                 */
+                if (field.GateCountAt(i) > 0)
+                {
+                    Gizmos.color = new Color(.3f, .7f, 1f, .5f);
+                    Gizmos.DrawCube(centre, new Vector3(grid.CellSize * .9f, .02f, grid.CellSize * .9f));
                 }
 
                 if (gizmoMode != FlowGizmoMode.FLOW)

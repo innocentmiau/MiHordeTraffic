@@ -110,6 +110,13 @@ namespace MiHordeTraffic.Movement
          * whatever happens to be nearest the goal, and this is the other half of that: the door holds.
          */
         [ReadOnly] public NativeArray<int> Gated;
+
+        /*
+         * Whether a body on ground with no route to the goal walks at it anyway. Off, it stands. A body the grid
+         * cannot place at all ignores this and always makes for the nearest footing it can find, since that is a
+         * recovery rather than a routing decision.
+         */
+        public bool ApproachUnreachableGoal;
         [ReadOnly] public NativeArray<float3> Push;
         [ReadOnly] public NativeArray<float> Speed;
         [ReadOnly] public NativeArray<float> Density;
@@ -202,7 +209,12 @@ namespace MiHordeTraffic.Movement
         public float FacingCosLimit;
         public float ArriveRadius;
         public float ArriveTaper;
-        public float3 Goal;
+        /*
+         * The goal with its size, rather than a bare position. Arrival, the near goal steering blend and the last
+         * resort walk all measure against the nearest part of it, so a body reaching the side of a building has
+         * arrived at it instead of being told there is still half a building's width to go.
+         */
+        public HordeGoalArea Goal;
         public int RecoverySearchRadius;
 
         [WriteOnly] public NativeArray<float3> Positions;
@@ -489,7 +501,7 @@ namespace MiHordeTraffic.Movement
              * Ramping the pull to nothing across the last stretch leaves no boundary to oscillate across, and bodies
              * settle into a ring because the only thing left acting on them there is each other.
              */
-            float distance = math.distance(position.xz, Goal.xz);
+            float distance = Goal.Distance(position.xz);
             float approach = math.saturate((distance - ArriveRadius) / math.max(ArriveTaper, .001f));
             bool arrived = approach <= 0f;
 
@@ -570,7 +582,7 @@ namespace MiHordeTraffic.Movement
 
                 if (approach < 1f)
                 {
-                    float2 direct = math.normalizesafe(Goal.xz - position.xz, flow);
+                    float2 direct = math.normalizesafe(Goal.ClosestPoint(position.xz) - position.xz, flow);
 
                     steer = math.normalizesafe(math.lerp(flow, direct, 1f - approach), flow);
                 }
@@ -653,8 +665,30 @@ namespace MiHordeTraffic.Movement
                  */
                 float3 rescue = onWalkable ? float3.zero : NearestFooting(position);
 
-                if (rescue.Equals(float3.zero) && !arrived)
-                    rescue = math.normalizesafe(new float3(Goal.x - position.x, 0f, Goal.z - position.z), float3.zero);
+                /*
+                 * The straight line is for a body the grid cannot place at all, and used to be for a body standing
+                 * on good ground with no route as well, which is the one case it is indefensible in. There it is
+                 * not a route, it is a guess that the goal is roughly that way, and the reason there is no route is
+                 * usually something solid on exactly that bearing. So a crowd sealed off from its target walked at
+                 * the wall between them and kept walking, and a crowd that had been queueing sensibly at a gate
+                 * turned into one pressing into a building the moment that gate became a wall.
+                 *
+                 * Standing is the honest answer to a goal that cannot be reached from here. The field is not
+                 * failing to describe the ground, it is describing ground with no way through, and there is nothing
+                 * on it worth walking to that this body cannot already see. Separation still spreads the crowd, so
+                 * it settles into a mass against the barrier rather than freezing on the spot, and the moment
+                 * anything opens a way the expansion reaches these cells and the branch above takes over again.
+                 *
+                 * Walking to the point of their own region closest to the goal is the better answer and is a real
+                 * feature: it needs the walkable area labelled into connected pieces and a second expansion per
+                 * piece, and neither exists yet.
+                 */
+                if (rescue.Equals(float3.zero) && (!onWalkable || ApproachUnreachableGoal) && !arrived)
+                {
+                    float2 towards = Goal.ClosestPoint(position.xz) - position.xz;
+
+                    rescue = math.normalizesafe(new float3(towards.x, 0f, towards.y), float3.zero);
+                }
 
                 if (!rescue.Equals(float3.zero))
                 {

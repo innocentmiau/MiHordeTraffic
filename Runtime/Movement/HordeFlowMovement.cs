@@ -147,6 +147,14 @@ namespace MiHordeTraffic.Movement
         [Tooltip("Metres over which a body eases to a stop before that, rather than switching off at a line.")]
         [SerializeField, Min(.01f)] private float arriveTaper = 3f;
 
+        /*
+         * Only bites where the goal is genuinely sealed off, which is rarer than it sounds: a target standing
+         * inside an obstacle still routes normally, because the expansion seeds from the nearest walkable cell to
+         * it. This is for ground with no way through at all.
+         */
+        [Tooltip("What bodies do when no route to the goal exists from where they stand. HOLD stands still. APPROACH walks at it regardless, pressing into whatever is in the way.")]
+        [SerializeField] private HordeUnreachableGoal unreachableGoal = HordeUnreachableGoal.HOLD;
+
         [Header("Advanced")]
         [SerializeField] private HordeFlowAdvanced advanced = new HordeFlowAdvanced();
 
@@ -739,7 +747,8 @@ namespace MiHordeTraffic.Movement
                 LastPosition = _lastPosition,
                 ArriveRadius = arriveRadius,
                 ArriveTaper = arriveTaper,
-                Goal = driver.Target ? (float3)driver.Target.position : float3.zero,
+                ApproachUnreachableGoal = unreachableGoal == HordeUnreachableGoal.APPROACH,
+                Goal = driver.GoalArea,
                 RecoverySearchRadius = advanced.RecoverySearchRadius,
                 Positions = _positions,
                 Reference = _reference,
@@ -817,7 +826,7 @@ namespace MiHordeTraffic.Movement
                 BodyCount = _bodies.Count,
                 DeltaTime = step,
                 ProgressSmoothing = progressSmoothing,
-                Goal = driver.Target ? (float3)driver.Target.position : float3.zero,
+                Goal = driver.GoalArea,
                 ArriveRadiusSquared = arriveRadius * arriveRadius
             }
             .Schedule(clear);

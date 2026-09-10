@@ -177,6 +177,8 @@ namespace MiHordeTraffic.Pathing.FlowField
         private bool _hasLastGoal;
         private long _buildStart;
         private bool _dirty = true;
+        private Transform _shapeSource;
+        private HordeTarget _shape;
 
         /// <summary>
         /// Whether something else is calling Rebuild, in which case the driver stops doing it on its own.
@@ -446,6 +448,32 @@ namespace MiHordeTraffic.Pathing.FlowField
         public void MarkDirty() => _dirty = true;
 
         /*
+         * Resolved every time rather than cached, so a target that is swapped, resized or knocked over is described
+         * correctly without anything having to announce it. The component lookup is cached against the transform it
+         * was found on, since GetComponent every rebuild on a target that never changes is a call for nothing.
+         *
+         * A target with no HordeTarget on it is a point, which is what every target was before shapes existed.
+         */
+        /// <summary>
+        /// Where the goal is and how much ground it covers, which is a bare point unless the target has a HordeTarget.
+        /// </summary>
+        public HordeGoalArea GoalArea
+        {
+            get
+            {
+                if (!target) return default;
+
+                if (_shapeSource != target)
+                {
+                    _shapeSource = target;
+                    _shape = target.GetComponent<HordeTarget>();
+                }
+
+                return _shape ? _shape.Area : HordeGoalArea.Point(target.position);
+            }
+        }
+
+        /*
          * Queued rather than applied on the spot, because the walkability array is being read by the expansion for
          * as long as one is in flight, and on a large grid that is most of every interval. Applied at the top of
          * the next frame that has no expansion running, which is a handful of frames at worst.
@@ -461,7 +489,13 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <param name="area">The world area the structure covers.</param>
         /// <param name="updateRouting">Whether the field is expanded again so the crowd routes around it, rather than only walking into it and sliding past.</param>
         /// <param name="kind">Whether the ground is taken away or merely shut, so a crowd still routes to a gate.</param>
-        public void BlockArea(Bounds area, bool updateRouting = true, HordeBlockKind kind = HordeBlockKind.SOLID) =>
+        /*
+         * The kind comes before the routing flag, and is worth the break to callers it causes. It used to trail
+         * both defaults, which made it the easiest argument in the pair to leave off, and leaving it off on the
+         * release half of a gate silently decrements the solid count instead: the gate is never given back and the
+         * cells stay shut for good, with nothing in the field or the gizmos showing why.
+         */
+        public void BlockArea(Bounds area, HordeBlockKind kind = HordeBlockKind.SOLID, bool updateRouting = true) =>
             _blocks.Add(new HordeBlockRequest { Area = area, Delta = 1, UpdateRouting = updateRouting, Kind = kind });
 
         /// <summary>
@@ -469,23 +503,18 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// </summary>
         /// <param name="area">The same world area that was blocked.</param>
         /// <param name="updateRouting">Whether the field is expanded again for it.</param>
-        /// <param name="kind">The same kind it was blocked with, or the counts will not come back to zero.</param>
-        public void UnblockArea(Bounds area, bool updateRouting = true, HordeBlockKind kind = HordeBlockKind.SOLID) =>
+        /// <param name="kind">The same kind it was blocked with, or the counts will not come back to zero and the ground never reopens.</param>
+        public void UnblockArea(Bounds area, HordeBlockKind kind = HordeBlockKind.SOLID, bool updateRouting = true) =>
             _blocks.Add(new HordeBlockRequest { Area = area, Delta = -1, UpdateRouting = updateRouting, Kind = kind });
 
         /// <summary>
-        /// How many block or unblock requests are waiting for a frame with no expansion in flight.
+        /// How many block or unblock requests have been queued and not yet applied, which is normally zero.
         /// </summary>
         public int PendingBlocks => _blocks.Count;
 
-        /*
-         * Only when nothing is reading the array. An expansion already in flight was started against the old
-         * walkability and will finish against it, which is correct: it produces the field as it was a moment ago,
-         * and the rebuild these changes ask for replaces it.
-         */
         private void ApplyPendingBlocks()
         {
-            if (_blocks.Count == 0 || _field.HasPendingBuild) return;
+            if (_blocks.Count == 0) return;
 
             bool changed = false;
 
@@ -497,9 +526,18 @@ namespace MiHordeTraffic.Pathing.FlowField
              */
             if (!_field.IsBaked) return;
 
+            /*
+             * No longer waits for a frame with no expansion running. It used to, because the expansion reads the
+             * walkability it was editing, and on a grid large enough that an expansion outlasts the interval that
+             * asks for one there is no such frame: a building switched off never came back, for good. The
+             * expansion takes its own copy of what it reads now, so this can write whenever it likes.
+             */
+
             for (int i = 0; i < _blocks.Count; i++)
             {
                 HordeBlockRequest request = _blocks[i];
+
+                WarnIfGroundWasNeverThere(request);
 
                 if (!_field.ApplyBlock(request.Area, obstacleClearance, request.Delta, request.Kind)) continue;
 
@@ -514,6 +552,30 @@ namespace MiHordeTraffic.Pathing.FlowField
             _blocks.Clear();
 
             if (changed) _dirty = true;
+        }
+
+        /*
+         * The one failure in this system that looks exactly like a bug in it. A structure standing on ground the
+         * bake never found blocks nothing, because there is nothing there to take, and switching it off gives
+         * nothing back, because there is nothing to give. What is seen is a crowd walking around a building that
+         * has been removed, and every part of the routing that produced it was correct.
+         *
+         * Almost always the building was in the scene when the navmesh was baked, so Unity carved a hole under it
+         * and this grid copied the hole. A structure meant to be taken away at runtime has to be left out of the
+         * navmesh bake and blocked here instead, so that the ground under it exists to be given back.
+         *
+         * Editor and development builds only, since it is a scene setup mistake rather than anything a player can
+         * cause, and it is checked on the way in rather than every frame.
+         */
+        [Conditional("UNITY_EDITOR"), Conditional("DEVELOPMENT_BUILD")]
+        private void WarnIfGroundWasNeverThere(HordeBlockRequest request)
+        {
+            if (request.Delta <= 0 || request.Kind != HordeBlockKind.SOLID) return;
+            if (_field.HasBakedGround(request.Area, obstacleClearance)) return;
+
+            Debug.LogWarning($"[MiHordeTraffic] A solid obstacle at {request.Area.center} covers no ground the bake found walkable, "
+                + "so it blocks nothing and switching it off will not open a path. The usual cause is that it was present when the "
+                + "NavMesh was baked, which carved a hole under it. Exclude it from the NavMesh bake and let this block it instead.", this);
         }
 
         /*
@@ -555,7 +617,15 @@ namespace MiHordeTraffic.Pathing.FlowField
              * Either the ceiling has come round, or the goal has moved far enough to be worth redrawing for and
              * enough time has passed since the last expansion to afford one.
              */
-            bool due = _countdown <= 0f;
+            /*
+             * Dirty counts as due, rather than waiting for the ceiling to come round. Ground appearing or going
+             * away is a change somebody made, usually while watching, and holding the answer back for the rest of
+             * an interval reads as the switch not having worked. It also matters when the expansion is refused
+             * below for one already being in flight: without this the retry waits out another whole interval
+             * instead of coming back next frame, and on a grid where expansions outlast the interval that is a
+             * change that lands late every single time.
+             */
+            bool due = _countdown <= 0f || _dirty;
             bool moved = _hasLastGoal
                 && _sinceRebuild >= minimumRebuildInterval
                 && math.distancesq(goal.xz, _lastGoal.xz) >= rebuildDistance * rebuildDistance;
@@ -587,7 +657,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             _lastGoal = goal;
             _hasLastGoal = true;
 
-            if (!_field.Schedule(goal, directionMode, 8, maximumSlope, gatePenalty)) return false;
+            if (!_field.Schedule(GoalArea, directionMode, 8, maximumSlope, gatePenalty)) return false;
 
             _dirty = false;
             _buildStart = Stopwatch.GetTimestamp();

@@ -51,7 +51,7 @@ namespace MiHordeTraffic.Movement
         public int BodyCount;
         public float DeltaTime;
         public float ProgressSmoothing;
-        public float3 Goal;
+        public HordeGoalArea Goal;
         public float ArriveRadiusSquared;
 
         public void Execute()
@@ -88,7 +88,9 @@ namespace MiHordeTraffic.Movement
                  */
                 Occupancy[cell]++;
 
-                if (math.distancesq(position.xz, Goal.xz) <= ArriveRadiusSquared) continue;
+                float toGoal = Goal.Distance(position.xz);
+
+                if (toGoal * toGoal <= ArriveRadiusSquared) continue;
 
                 float2 flow = HordeFlowDirection.At(Grid, Walkable, Integration, cell, Mode);
                 if (flow.Equals(float2.zero)) continue;

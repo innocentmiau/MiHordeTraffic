@@ -13,6 +13,13 @@ namespace MiHordeTraffic.Pathing.FlowField
      * The area is taken once, on the way in, and kept. Reading it again on the way out would give back whichever
      * cells the object covers wherever it has ended up, which for anything that was moved, scaled or knocked over
      * is not the ground it took.
+     *
+     * The kind is kept for the same reason and was not, which cost more than the area ever could have. Blocking as
+     * a gate and releasing as a solid decrements the wrong counter: the solid count floors at zero and nothing
+     * happens, while the gate count is never given back and stays above zero for the rest of the session. Nothing
+     * shows it. The expansion still routes through a gate, so the field looks open and draws open, and only the
+     * mover refuses to step in, so what is seen is a crowd standing at a doorway it has every reason to walk
+     * through. Changing the kind in the inspector on a blocking obstacle is all it takes.
      */
     /// <summary>
     /// Marks the ground under this object unwalkable for the horde grid while it is enabled.
@@ -37,6 +44,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         [SerializeField] private HordeBlockKind kind = HordeBlockKind.SOLID;
 
         private Bounds _applied;
+        private HordeBlockKind _appliedKind;
         private bool _blocked;
 
         /// <summary>
@@ -72,9 +80,10 @@ namespace MiHordeTraffic.Pathing.FlowField
             if (!driver) return;
 
             _applied = Resolve();
+            _appliedKind = kind;
             _blocked = true;
 
-            driver.BlockArea(_applied, true, kind);
+            driver.BlockArea(_applied, _appliedKind, true);
         }
 
         private void OnDisable()
@@ -87,7 +96,29 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             if (!driver) return;
 
-            driver.UnblockArea(_applied, true, kind);
+            driver.UnblockArea(_applied, _appliedKind, true);
+        }
+
+        /*
+         * So that editing the kind, the size or the offset of a blocking obstacle during play takes effect, rather
+         * than needing the object switched off and on again to be noticed. Releasing what was taken before taking
+         * the new shape, in that order, because the two footprints usually overlap and blocking first would leave
+         * the shared cells released by the unblock that follows.
+         */
+        private void OnValidate()
+        {
+            if (!Application.isPlaying || !_blocked) return;
+
+            HordeFlowFieldDriver driver = HordeFlowFieldDriver.Instance;
+
+            if (!driver) return;
+
+            driver.UnblockArea(_applied, _appliedKind, true);
+
+            _applied = Resolve();
+            _appliedKind = kind;
+
+            driver.BlockArea(_applied, _appliedKind, true);
         }
 
         /*

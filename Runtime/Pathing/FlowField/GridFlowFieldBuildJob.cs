@@ -65,11 +65,22 @@ namespace MiHordeTraffic.Pathing.FlowField
          */
         public float MaximumSlope;
 
+        /*
+         * A tenth of a millimetre, so a cell centre sitting exactly on a target's edge is inside it rather than
+         * being rejected over the last bit of a float.
+         */
+        private const float SEED_TOLERANCE = .0001f;
+
         public NativeArray<float> Integration;
         public NativeList<HeapEntry> Heap;
         public NativeArray<int> GoalIndex;
 
-        public float3 Goal;
+        /*
+         * Where the goal is and how much ground it covers. A point seeds one cell, as it always did. A shape seeds
+         * every walkable cell it covers, which turns this into a multi source expansion and costs nothing extra:
+         * each cell is still settled exactly once, the heap simply starts with more than one entry in it.
+         */
+        public HordeGoalArea Area;
         public int GoalSearchRadius;
 
         public void Execute()
@@ -79,13 +90,7 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             Heap.Clear();
 
-            int goal = NearestWalkable(Goal);
-            GoalIndex[0] = goal;
-
-            if (goal < 0) return;
-
-            Integration[goal] = 0f;
-            Push(new HeapEntry { Cost = 0f, Index = goal });
+            if (Seed() == 0) return;
 
             while (Heap.Length > 0)
             {
@@ -145,6 +150,87 @@ namespace MiHordeTraffic.Pathing.FlowField
                     Push(new HeapEntry { Cost = total, Index = index });
                 }
             }
+        }
+
+        /*
+         * Every cell the target covers becomes a source, so the field measures the distance to the nearest part of
+         * it rather than to its middle. That is what lets a crowd surround a building: with one source, everybody
+         * on the map walks to the single cell nearest the centre and queues against one face of it, whichever way
+         * they came from.
+         *
+         * Rings outward when the target covers no walkable ground, which is the normal case for anything solid: a
+         * keep blocks every cell under itself, so the first ring that finds anything is the ground around its
+         * walls, and seeding all of it at once puts bodies on every side.
+         *
+         * A point keeps the old single cell search untouched. Widening a point into a disc would change how every
+         * existing crowd converges, and a target that wants a size can say so.
+         */
+        private int Seed()
+        {
+            if (Area.Shape == HordeTargetShape.POINT)
+            {
+                int goal = NearestWalkable(Area.Centre);
+
+                GoalIndex[0] = goal;
+
+                if (goal < 0) return 0;
+
+                Integration[goal] = 0f;
+                Push(new HeapEntry { Cost = 0f, Index = goal });
+
+                return 1;
+            }
+
+            for (int radius = 0; radius <= GoalSearchRadius; radius++)
+            {
+                int seeded = SeedWithin(radius);
+
+                if (seeded > 0) return seeded;
+            }
+
+            GoalIndex[0] = -1;
+            return 0;
+        }
+
+        /*
+         * Cells no further than the given number of cells from the target's edge. Anything nearer than that was
+         * looked at on an earlier ring and found unwalkable, which is the only reason there is a later one, so
+         * nothing is seeded twice.
+         */
+        private int SeedWithin(int radius)
+        {
+            float reach = radius * Grid.CellSize;
+            float2 half = Area.Reach + reach;
+
+            int2 min = Grid.CellOf(new float3(Area.Centre.x - half.x, 0f, Area.Centre.z - half.y));
+            int2 max = Grid.CellOf(new float3(Area.Centre.x + half.x, 0f, Area.Centre.z + half.y));
+
+            min = math.max(min, int2.zero);
+            max = math.min(max, new int2(Grid.Width - 1, Grid.Height - 1));
+
+            int seeded = 0;
+
+            for (int z = min.y; z <= max.y; z++)
+            for (int x = min.x; x <= max.x; x++)
+            {
+                int2 cell = new int2(x, z);
+                int index = Grid.IndexOf(cell);
+
+                if (Walkable[index] == 0) continue;
+
+                float3 centre = Grid.CentreOf(cell);
+
+                if (Area.Distance(centre.xz) > reach + SEED_TOLERANCE) continue;
+
+                Integration[index] = 0f;
+                Push(new HeapEntry { Cost = 0f, Index = index });
+
+                if (seeded == 0) GoalIndex[0] = index;
+
+                seeded++;
+            }
+
+            return seeded;
         }
 
         /*
