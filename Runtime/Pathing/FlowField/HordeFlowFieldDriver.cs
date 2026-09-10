@@ -55,6 +55,19 @@ namespace MiHordeTraffic.Pathing.FlowField
         [SerializeField, Min(.1f)] private float sampleHeight = 4f;
         [Tooltip("Metres a cell must be from unwalkable ground to count as walkable, so bodies do not hug walls.")]
         [SerializeField, Min(0f)] private float edgeClearance = .5f;
+
+        /*
+         * The bake asks the navmesh for the nearest surface to each cell centre, and that call answers however far
+         * away it has to look. What decides whether a cell is walkable is therefore not the hit but how far it
+         * landed from the centre that asked, and that distance is this.
+         *
+         * At one it is on the navmesh or it is not. Lower accepts cells near it, which grows the walkable area past
+         * every navmesh edge in the level and is where bodies standing inside walls come from. It stays adjustable
+         * because the strict answer shrinks the walkable area at every edge by whatever part of a cell hangs off
+         * the navmesh, and a corridor already a cell or two wide can lose its middle to that.
+         */
+        [Tooltip("How closely a cell must sit on the navmesh to count as walkable. 1 accepts only cells whose centre is on it. Lower grows the grid past the navmesh edge and lets bodies clip walls.")]
+        [SerializeField, Range(0f, 1f)] private float sampleAccuracy = 1f;
         [SerializeField] private bool bakeOnStart = true;
 
         [Header("Field")]
@@ -186,7 +199,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             Bounds area = ResolveBounds();
 
             Stopwatch watch = Stopwatch.StartNew();
-            _field.Bake(area, cellSize, sampleHeight, edgeClearance, NavMesh.AllAreas);
+            _field.Bake(area, cellSize, sampleHeight, edgeClearance, NavMesh.AllAreas, sampleAccuracy);
             watch.Stop();
 
             ClearStats();
@@ -197,7 +210,7 @@ namespace MiHordeTraffic.Pathing.FlowField
              */
             _dirty = true;
 
-            Debug.Log($"[MiHordeTraffic] Baked {_field.Grid.Width}x{_field.Grid.Height} grid at {cellSize}m over {area.size.x:F0}x{area.size.z:F0} in {watch.Elapsed.TotalMilliseconds:F1} ms, {_field.WalkableCells} of {_field.Grid.Count} cells walkable ({_field.WalkableFraction:P0}).");
+            Debug.Log($"[MiHordeTraffic] Baked {_field.Grid.Width}x{_field.Grid.Height} grid at {cellSize}m over {area.size.x:F0}x{area.size.z:F0} in {watch.Elapsed.TotalMilliseconds:F1} ms, {_field.WalkableCells} of {_field.Grid.Count} cells walkable ({_field.WalkableFraction:P0}), sample accuracy {sampleAccuracy:F2}.");
 
             /*
              * A grid that is mostly not walkable is nearly always bounds that do not match the floor, and Unity's
@@ -364,6 +377,11 @@ namespace MiHordeTraffic.Pathing.FlowField
          * Called by anything that changes what the expansion would produce, which the driver has no way to notice
          * on its own: congestion writing new costs, or a game blocking ground when a building goes up.
          */
+        /// <summary>
+        /// How closely a cell has to sit on the navmesh to be baked as walkable, from nearby at zero to on it at one.
+        /// </summary>
+        public float SampleAccuracy => sampleAccuracy;
+
         /// <summary>
         /// Says the field is out of date, so the next interval actually rebuilds it rather than skipping.
         /// </summary>

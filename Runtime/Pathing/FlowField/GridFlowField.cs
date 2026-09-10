@@ -25,6 +25,12 @@ namespace MiHordeTraffic.Pathing.FlowField
     public class GridFlowField : IDisposable
     {
 
+        /*
+         * A centimetre. Below this a hit is on the cell centre as far as anything here is concerned, and asking for
+         * less would reject cells over an exact difference that means nothing on a navmesh.
+         */
+        private const float EXACT_SAMPLE_TOLERANCE = .01f;
+
         private static readonly ProfilerMarker BAKE_MARKER = new ProfilerMarker("MiHordeTraffic.Pathing.Bake");
         private static readonly ProfilerMarker BUILD_MARKER = new ProfilerMarker("MiHordeTraffic.Pathing.FlowField");
 
@@ -159,7 +165,8 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <param name="sampleHeight">How far above and below a cell centre to look for the navmesh.</param>
         /// <param name="edgeClearance">How far from unwalkable ground a cell must be to count as walkable.</param>
         /// <param name="areaMask">Navmesh areas to accept.</param>
-        public void Bake(Bounds bounds, float cellSize, float sampleHeight, float edgeClearance, int areaMask)
+        /// <param name="sampleAccuracy">How closely a cell has to sit on the navmesh. One accepts only cells whose centre is on it.</param>
+        public void Bake(Bounds bounds, float cellSize, float sampleHeight, float edgeClearance, int areaMask, float sampleAccuracy = 1f)
         {
             Dispose();
 
@@ -197,7 +204,13 @@ namespace MiHordeTraffic.Pathing.FlowField
 #endif
 
             int walkable = 0;
-            float halfCell = grid.CellSize * .5f;
+
+            /*
+             * Interpolated so that zero is the half cell slack this used to have unconditionally, and one is as
+             * close to on the navmesh as floating point allows. The floor is a centimetre rather than nothing,
+             * because a hit on a polygon is projected onto it and does not come back bit identical.
+             */
+            float tolerance = math.lerp(grid.CellSize * .5f, EXACT_SAMPLE_TOLERANCE, math.saturate(sampleAccuracy));
 
             using (BAKE_MARKER.Auto())
             {
@@ -210,15 +223,25 @@ namespace MiHordeTraffic.Pathing.FlowField
                     if (!NavMesh.SamplePosition(centre, out NavMeshHit hit, sampleHeight, areaMask)) continue;
 
                     /*
-                     * The sample has to land inside this cell, not merely near it. SamplePosition returns the
-                     * nearest point on a surface however far away it is, so a generous tolerance quietly invents
-                     * walkable ground outside the navmesh: at a full cell of slack every edge in the level grows
-                     * by a metre, and bodies walk that metre with half of themselves hanging over the drop.
+                     * The question is whether this cell is on the navmesh, not whether the navmesh is near it, and
+                     * those are different by exactly the amount that puts bodies inside walls.
                      *
-                     * Half a cell is the honest test. The navmesh is already inset by the agent radius when Unity
-                     * bakes it, and anything looser than this throws that inset away again.
+                     * SamplePosition hands back the nearest point on a surface however far away it is, so a cell
+                     * centre buried in a wall finds the navmesh at the wall's foot and reports a hit. Measured
+                     * against half a cell that hit was accepted, the cell was marked walkable, and its height came
+                     * from the edge it found: a strip of invented ground around every obstacle in the level, half a
+                     * cell wide, that bodies stand on with the wall through them.
+                     *
+                     * Asking for the hit to land on the cell centre is the honest test, and a hit for a centre
+                     * genuinely inside a navmesh polygon comes back at that centre, so the tolerance only has to
+                     * cover floating point rather than any real distance.
+                     *
+                     * It stays adjustable because tightening it shrinks the walkable area at every edge by up to
+                     * the part of a cell that hangs off the navmesh, and a corridor already only a cell or two wide
+                     * can lose its middle. The answer to that is smaller cells rather than a looser test, since a
+                     * looser test does not recover a corridor that is genuinely too narrow, it invents one.
                      */
-                    if (math.distancesq(((float3)hit.position).xz, centre.xz) > halfCell * halfCell) continue;
+                    if (math.distancesq(((float3)hit.position).xz, centre.xz) > tolerance * tolerance) continue;
 
                     _walkable[i] = 1;
                     _height[i] = hit.position.y;
