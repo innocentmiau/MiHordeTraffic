@@ -77,6 +77,15 @@ namespace MiHordeTraffic.Spawning
         {
             spawn = position;
 
+            /*
+             * Density is written by the congestion pass, which holds it from Update until LateUpdate, and a project
+             * spawns from a coroutine or an event far more often than from the narrow part of the frame where that
+             * array happens to be idle. Reading it anyway is not a race that might bite, it is a throw, and the
+             * first body lands before there is any congestion work to collide with so it always looks like the
+             * second spawn broke something.
+             */
+            if (HordeFlowMovement.Instance) HordeFlowMovement.Instance.CompletePending();
+
             HordeFlowFieldDriver driver = HordeFlowFieldDriver.Instance;
 
             if (!driver || !driver.Field.IsBaked) return false;

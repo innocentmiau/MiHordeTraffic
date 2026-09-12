@@ -295,6 +295,18 @@ namespace MiHordeTraffic.Movement
 
             if (index < 0 || index >= _bodies.Count) return false;
 
+            /*
+             * Both of these are written by the move job, so reading them before LateUpdate has joined it throws
+             * rather than returning something slightly stale. Gizmos run late enough to be safe by accident, which
+             * is exactly the kind of safety that holds until somebody calls this from Update and cannot see why it
+             * is different.
+             *
+             * The cost is giving up the overlap for this frame, and it is worth it here: the join was coming a few
+             * lines of engine code later anyway, and nothing that reads a body's heading for display is on a path
+             * where that matters.
+             */
+            Complete();
+
             heading = _heading[index];
             push = _push[index];
             return true;
@@ -967,6 +979,21 @@ namespace MiHordeTraffic.Movement
 
             _congestionCells = cells;
         }
+
+        /*
+         * Public because the arrays the jobs write are readable from outside and nothing else could make them safe
+         * to read. Density is the one with a real reason to be read: spawning asks how full a cell is, and the
+         * congestion pass owns that array from Update until LateUpdate. Everything a project normally spawns from,
+         * a coroutine, an event, a button callback, a wave timer, runs inside exactly that window, so asking was an
+         * error rather than a race and it threw on the second body rather than on an unlucky frame.
+         *
+         * Free when nothing is in flight and never more than bringing LateUpdate's own join forward when there is,
+         * so a caller pays the cost of the work it was going to wait for anyway and never pays it twice.
+         */
+        /// <summary>
+        /// Finishes any movement work still in flight, so the arrays the jobs write can be read safely.
+        /// </summary>
+        public void CompletePending() => Complete();
 
         private void Complete()
         {

@@ -1,7 +1,7 @@
 {
   "name": "com.andreleandrodev.mihordetraffic",
   "displayName": "MiHordeTraffic",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "unity": "6000.3",
   "unityRelease": "0f1",
   "description": "Crowd pathfinding for thousands of agents, where the crowd is aware of itself. Replaces per agent A* with a single flow field expansion that serves the whole horde, and prices every cell by how fast bodies actually cross it, so a jammed route becomes expensive and a second route opens on its own without anything having to notice the jam or decide a detour is worthwhile. Includes jobified reactive separation, crowd slowing, settling around a target, a scene setup tool, a live advisor that names which setting is costing the most, and a runtime switch to stock NavMeshAgent so any performance claim can be checked rather than believed.",
@@ -36,5 +36,17 @@
   },
   "documentationUrl": "https://github.com/innocentmiau/MiHordeTraffic#readme",
   "changelogUrl": "https://github.com/innocentmiau/MiHordeTraffic/blob/main/CHANGELOG.md",
-  "licensesUrl": "https://github.com/innocentmiau/MiHordeTraffic/blob/main/LICENSE.md"
+  "licensesUrl": "https://github.com/innocentmiau/MiHordeTraffic/blob/main/LICENSE.md",
+  "samples": [
+    {
+      "displayName": "Flow Field Crowd",
+      "description": "A spawner and an optional body script for a crowd driven by the flow field. Shows what HordeAgent already does and what a game adds on top.",
+      "path": "Samples~/FlowFieldCrowd"
+    },
+    {
+      "displayName": "NavMesh Agent Crowd",
+      "description": "A spawner for a stock NavMeshAgent crowd using HordeEntity, for comparing against the flow field in the same scene.",
+      "path": "Samples~/NavMeshCrowd"
+    }
+  ]
 }

@@ -5,6 +5,24 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+### Fixed
+
+- **`HordeSpawn.TryFind` threw when called from anywhere but a narrow part of the frame.** It reads the smoothed density to reject crowded cells, and that array is owned by the congestion pass from `Update` until `LateUpdate`. Coroutines, events, button callbacks and wave timers all run inside that window, so a wave spawner threw `InvalidOperationException` naming `HordeCongestionPruneJob`. The first body always landed, because there was no congestion work in flight yet to collide with, which made it look like the second spawn had broken something. It now finishes any movement work still in flight before reading.
+
+- **`HordeFlowMovement.TryGetState` had the same problem**, reading heading and push while the move job still owned them. Gizmos run late enough to be safe by accident; calling it from `Update` threw.
+
+### Added
+
+- **`HordeFlowMovement.CompletePending()`**, which finishes work still in flight so the arrays the jobs write can be read safely. Only needed if you read those arrays yourself, such as `GridFlowField.Density`. It is free when nothing is running and never costs more than bringing `LateUpdate`'s own join forward.
+
+- **Two samples**, installable from the Package Manager and deliberately separate, so whichever one you open is the whole of what that technique costs to set up rather than half of a script that does both.
+
+  **Flow Field Crowd** is a spawner and an optional body script. It shows the part worth copying, asking `HordeSpawn` where a body can stand rather than sampling the navmesh, and says plainly what a body does **not** need: no destination, no separation goal, no wants to move flag, and nothing at all for pooling. `HordeFlowMovement` writes all of those itself every frame, so a script that also writes them is overwriting the mover's answer with a worse one, which is the most common way a crowd ends up behaving strangely with nothing obviously wrong.
+
+  **NavMesh Agent Crowd** is a spawner and no body script, because `HordeEntity` already is one. It holds the `NavMeshAgent`, registers with `HordePathScheduler` so repaths are paced across the crowd, and takes a target. Writing a component beside it is how a project reimplements it without the pacing, which is the part that makes a large crowd affordable.
+
 ## [0.6.0]
 
 ### Upgrading

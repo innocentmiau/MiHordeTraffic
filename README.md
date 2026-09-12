@@ -49,6 +49,8 @@ Unity 6000.3 or newer. Pulls in Burst, Collections, Mathematics and AI Navigatio
 
 ## Setup
 
+**Package Manager > Samples** has two, **Flow Field Crowd** and **NavMesh Agent Crowd**. Each is self contained, so install only the one you want.
+
 1. Bake a NavMesh.
 2. **Tools > MiHordeTraffic > Set Up Scene**: adds everything missing to one manager object.
 3. Assign the driver's **Target**.
@@ -103,6 +105,8 @@ if (HordeSpawn.TryFind(wanted, 5f, out Vector3 spawn))
 Returns the nearest cell that is on the grid, reachable, not gated and not already packed, as a point on the ground scattered inside its cell. Sampling the NavMesh yourself does not answer this, because the grid rejects ground the NavMesh accepts.
 
 An overload takes how full a cell may already be, as a fraction of what it holds at rest.
+
+Safe to call from anywhere: a coroutine, an event, a wave timer. If you read `GridFlowField.Density` or the mover's arrays **yourself**, call `HordeFlowMovement.Instance.CompletePending()` first, or Unity's job safety checks will throw.
 
 ---
 
