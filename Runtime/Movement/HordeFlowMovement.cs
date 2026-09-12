@@ -265,6 +265,16 @@ namespace MiHordeTraffic.Movement
         /// </summary>
         public int BodyCount => _bodies.Count;
 
+        /*
+         * Kept because the live count is taken at quit, and with pooling that is whatever happened to be alive at
+         * the end rather than what ran. A pool of five hundred with one enemy left standing reported one body and
+         * made every number beside it look wrong.
+         */
+        /// <summary>
+        /// The most bodies the field has driven at once this session, which is what the per body figures mean.
+        /// </summary>
+        public int PeakBodyCount { get; private set; }
+
         /// <summary>
         /// The field driver this mover reads, or null when none has been assigned.
         /// </summary>
@@ -1060,6 +1070,8 @@ namespace MiHordeTraffic.Movement
             body.FlowIndex = slot;
             _bodies.Add(body);
             _transforms.Add(body.transform);
+
+            if (_bodies.Count > PeakBodyCount) PeakBodyCount = _bodies.Count;
         }
 
         private void Remove(HordeAgent body)

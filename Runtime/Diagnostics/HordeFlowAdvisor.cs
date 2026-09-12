@@ -34,7 +34,12 @@ namespace MiHordeTraffic.Diagnostics
          * that asks for it. Three quarters, so it says something before the two cross rather than after.
          */
         private const float REBUILD_LATENCY_LIMIT = .75f;
-        private const float CONGESTION_CELL_LIMIT = 40000f;
+        /*
+         * How many tracked cells per body counts as a trail worth mentioning. Congestion walks the cells the crowd
+         * is actually on plus what it has not yet forgotten, so a handful each is ordinary and a great many each
+         * means the forgetting is the cost rather than the crowd.
+         */
+        private const float CONGESTION_TRAIL_LIMIT = 8f;
         private const float WALKABLE_FRACTION_LIMIT = .5f;
         private const float CROWDED_CELL_LIMIT = .75f;
 
@@ -206,14 +211,24 @@ namespace MiHordeTraffic.Diagnostics
                     $"Only {driver.Field.WalkableFraction * 100f:F0}% of the {driver.TotalCells} cells are walkable, so most of the grid is describing nothing.",
                     "Lower Fit Margin, or turn Fit To Nav Mesh on so the grid follows the ground rather than a box around it."));
 
-            if (driver.TotalCells > CONGESTION_CELL_LIMIT)
-                ISSUES.Add(new HordeSceneIssue(HordeIssueSeverity.ADVICE,
-                    $"The grid is {driver.TotalCells} cells, and congestion walks all of them every frame, nine times over where the cost blur is on.",
-                    "Raise Cell Size. Doubling it quarters the cell count and the per frame congestion cost with it."));
-
             HordeFlowMovement movement = HordeFlowMovement.Instance;
 
             if (!movement || movement.BodyCount == 0 || driver.WalkableCells == 0) return;
+
+            /*
+             * Measured against the cells congestion actually tracks rather than against the size of the grid. This
+             * used to read the grid and tell anyone with a large one to raise Cell Size, which was true when the
+             * pass swept every cell every frame and became wrong the moment it became a sparse active set. It was
+             * advice against the thing that made a metre of cells affordable, given to exactly the people who had
+             * just achieved it, and it fired on the cell count alone however small the crowd was.
+             *
+             * What can genuinely cost too much is the trail: cells the crowd has left but that have not yet decayed
+             * back to normal are walked every frame alongside the ones under it.
+             */
+            if (movement.CongestionEnabled && movement.PeakCongestionCells > movement.BodyCount * CONGESTION_TRAIL_LIMIT)
+                ISSUES.Add(new HordeSceneIssue(HordeIssueSeverity.ADVICE,
+                    $"Congestion peaked at {movement.PeakCongestionCells} tracked cells against {movement.BodyCount} bodies, so most of the pass is walking the trail the crowd left rather than the crowd.",
+                    "Raise Fall Smoothing so cells forget congestion sooner, or lower Cost Blur Radius. Both shorten the trail without changing how the crowd reroutes."));
 
             float perCell = (float)movement.BodyCount / driver.WalkableCells;
 

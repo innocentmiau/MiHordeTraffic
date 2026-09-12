@@ -169,10 +169,22 @@ namespace MiHordeTraffic.Pathing
             StringBuilder text = new StringBuilder(512);
 
             text.AppendLine("[MiHordeTraffic] session report");
-            text.Append("  bodies       ").Append(_bodies.Count).Append(" scheduled, ")
-                .Append(HordeAgent.AgentCount).AppendLine(" horde agents");
+            HordeFlowMovement movement = HordeFlowMovement.Instance;
+            int peak = movement ? movement.PeakBodyCount : 0;
+
+            /*
+             * The peak rather than what is alive now, because this is written at quit and a pooled crowd is mostly
+             * asleep by then. Five hundred agents with one enemy left standing reported one body, which made every
+             * per body figure under it read as nonsense.
+             */
+            text.Append("  bodies       ").Append(peak).Append(" driven at peak, ")
+                .Append(HordeAgent.AgentCount).AppendLine(" horde agents in the scene");
+
+            if (_bodies.Count > 0)
+                text.Append("               ").Append(_bodies.Count).AppendLine(" registered with the scheduler");
 
             System.Array values = System.Enum.GetValues(typeof(HordePathTechnique));
+            bool anyRan = false;
 
             for (int i = 0; i < values.Length; i++)
             {
@@ -180,8 +192,17 @@ namespace MiHordeTraffic.Pathing
                 FrameTimeSamples samples = _frames[(int)value];
                 FrameTimeStats frame = samples.Resolve();
 
+                /*
+                 * Left out entirely rather than printed as not run. These two blocks exist to compare techniques
+                 * against each other, and outside a benchmark neither is ever measured, so the report led with two
+                 * headings and four not runs before reaching anything true. That reads as something having failed.
+                 */
+                if (frame.Count == 0 && !_stats[(int)value].Ran) continue;
+
+                anyRan = true;
+
                 text.Append("  ").AppendLine(value.ToString());
-                text.Append("    frame      ").AppendLine(frame.Count == 0 ? "not run" : frame.ToString());
+                text.Append("    frame      ").AppendLine(frame.ToString());
 
                 if (samples.Dropped > 0)
                     text.Append("               ").Append(samples.Dropped)
@@ -189,6 +210,9 @@ namespace MiHordeTraffic.Pathing
 
                 text.Append("    scheduler  ").AppendLine(_stats[(int)value].ToString());
             }
+
+            if (!anyRan)
+                text.AppendLine("  techniques   not measured, which is ordinary outside a benchmark: the flow field moves the crowd on its own and the scheduler has nothing to pace.");
 
             HordeFlowFieldDriver driver = HordeFlowFieldDriver.Instance;
 
@@ -200,12 +224,10 @@ namespace MiHordeTraffic.Pathing
                     .Append(driver.AverageBuildMilliseconds.ToString("F3")).AppendLine(" ms average");
             }
 
-            HordeFlowMovement mover = HordeFlowMovement.Instance;
-
-            if (mover)
-                text.Append("    congestion ").Append(mover.ActiveCongestionCells).Append(" cells tracked, ")
-                    .Append(mover.PeakCongestionCells).Append(" at peak, against ")
-                    .Append(mover.BodyCount).AppendLine(" bodies");
+            if (movement)
+                text.Append("    congestion ").Append(movement.ActiveCongestionCells).Append(" cells tracked, ")
+                    .Append(movement.PeakCongestionCells).Append(" at peak, against ")
+                    .Append(peak).AppendLine(" bodies at peak");
 
             _phases.AppendTo(text);
 

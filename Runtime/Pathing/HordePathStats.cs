@@ -58,6 +58,11 @@ namespace MiHordeTraffic.Pathing
         }
 
         /// <summary>
+        /// Whether this technique ever ran, so a report can leave out the ones that did not.
+        /// </summary>
+        public bool Ran => _frames > 0;
+
+        /// <summary>
         /// Throws away everything recorded so far.
         /// </summary>
         public void Clear() => this = default;

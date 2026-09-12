@@ -5,6 +5,18 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1]
+
+### Fixed
+
+- **The advisor told you to raise Cell Size because the grid was large.** It claimed congestion walks every cell every frame, which stopped being true when the pass became a sparse active set, and it fired on the cell count alone however small the crowd was. So it argued against the change that made a metre of cells affordable, to exactly the people who had just made it, while the report two lines below said `3 cells tracked`. It now measures the cells congestion actually tracks against the bodies, and only speaks when the trail the crowd leaves is most of the work.
+
+### Changed
+
+- **The session report leaves out techniques that never ran.** Both blocks exist to compare `NAVMESH_AGENT` against `FLOW_FIELD`, and outside a benchmark neither is measured, so the report opened with two headings and four `not run` lines before reaching anything true. That reads as something having failed. It now says once that techniques were not measured, and why that is ordinary.
+
+- **The report counts bodies at their peak rather than at quit.** It is written from `OnApplicationQuit`, and a pooled crowd is mostly asleep by then: five hundred agents with one enemy left standing reported `against 1 bodies`, which made every per body figure beside it read as nonsense. Added `HordeFlowMovement.PeakBodyCount` for it.
+
 ## [0.7.0]
 
 ### Fixed
