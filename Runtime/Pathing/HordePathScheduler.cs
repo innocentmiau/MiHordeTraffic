@@ -544,6 +544,18 @@ namespace MiHordeTraffic.Pathing
          */
         private IHordePathTechnique CreateTechnique(HordePathTechnique value)
         {
+            /*
+             * A 2D scene has no navmesh for an agent to stand on, so the baseline cannot run there at all. Falling back
+             * says so and rewrites the field, for the same reason the default case does: a silent swap would file the
+             * readings under a technique that never ran.
+             */
+            if (value == HordePathTechnique.NAVMESH_AGENT && HordePlane.Active.Is2D)
+            {
+                Debug.LogWarning($"[MiHordeTraffic] {value} needs a 3D navmesh and the driver is 2D, so the scheduler is running {HordePathTechnique.FLOW_FIELD} instead.");
+                technique = HordePathTechnique.FLOW_FIELD;
+                return new FlowFieldPathTechnique();
+            }
+
             switch (value)
             {
                 case HordePathTechnique.NAVMESH_AGENT:

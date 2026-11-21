@@ -89,7 +89,27 @@ namespace MiHordeTraffic.Movement
          */
         private const float SETTLED_MOVEMENT_SQUARED = .00000001f;
 
+        /*
+         * How far a heading has to lean left or right before a flipping sprite turns round. Without it a body walking
+         * straight up or down the screen, whose sideways heading hovers either side of zero, flips every few frames.
+         */
+        private const float FLIP_DEAD_ZONE = .2f;
+
         public HordeGridInfo Grid;
+
+        /*
+         * Everything below works in grid space, where the ground is XZ. Positions are converted on the way in from the
+         * transform and on the way back out to it, and nothing between those two lines knows a 2D scene exists.
+         */
+        public HordePlane Plane;
+
+        /*
+         * Off in 2D, where the floor is flat and a body's depth is whatever the game gave it for sorting. Snapping it to
+         * the grid's own depth would flatten every body onto one value and undo whatever ordering the game relied on.
+         */
+        public bool FollowGround;
+
+        public HordeFacing2D Facing2D;
 
         public FlowDirectionMode Mode;
 
@@ -436,7 +456,7 @@ namespace MiHordeTraffic.Movement
 
         public void Execute(int index, TransformAccess transform)
         {
-            float3 position = transform.position;
+            float3 position = Plane.ToGrid(transform.position);
 
             /*
              * Everything that costs is below this, so a frozen body pays a transform read and a branch. Its
@@ -505,7 +525,7 @@ namespace MiHordeTraffic.Movement
             float approach = math.saturate((distance - ArriveRadius) / math.max(ArriveTaper, .001f));
             bool arrived = approach <= 0f;
 
-            float3 velocity = Push[index];
+            float3 velocity = Plane.ToGrid(Push[index]);
 
             /*
              * How fast the body is trying to go under its own steam, which is what decides whether it should be
@@ -805,7 +825,7 @@ namespace MiHordeTraffic.Movement
                  * per cell makes the ground a staircase, level within a cell and a step at every boundary, and a
                  * body being jostled across one of those boundaries pops between two heights every frame.
                  */
-                next.y = HordeGroundHeight.At(Grid, Walkable, Height, next, nextCell);
+                if (FollowGround) next.y = HordeGroundHeight.At(Grid, Walkable, Height, next, nextCell);
 
                 /*
                  * Not written when the body is already there, and the saving is the write rather than the maths.
@@ -817,7 +837,7 @@ namespace MiHordeTraffic.Movement
                  * millimetre a second is never delivered at all. What was left was the same three floats written
                  * over themselves, for most of the crowd, every frame.
                  */
-                if (math.distancesq(next, position) > SETTLED_MOVEMENT_SQUARED) transform.position = next;
+                if (math.distancesq(next, position) > SETTLED_MOVEMENT_SQUARED) transform.position = Plane.ToWorld(next);
             }
             else if (!onWalkable)
             {
@@ -828,7 +848,7 @@ namespace MiHordeTraffic.Movement
                  * Asked of walkability alone, not of reachability. A body that can simply not get to the goal from
                  * where it stands is not stranded, it is waiting, and it stays on the walkable side of the wall.
                  */
-                if (math.distancesq(next, position) > SETTLED_MOVEMENT_SQUARED) transform.position = next;
+                if (math.distancesq(next, position) > SETTLED_MOVEMENT_SQUARED) transform.position = Plane.ToWorld(next);
             }
             else
             {
@@ -859,8 +879,22 @@ namespace MiHordeTraffic.Movement
 
             if (math.lengthsq(aim) < FACING_EPSILON) return;
 
+            if (Plane.Is2D && Facing2D == HordeFacing2D.NONE) return;
+
+            if (Plane.Is2D && Facing2D == HordeFacing2D.FLIP_X)
+            {
+                FlipTowards(transform, aim.x);
+                return;
+            }
+
+            /*
+             * In 2D the heading's two components are already world X and Y, so the angle is read straight off them and
+             * the sprite turns about the axis the camera looks down.
+             */
             quaternion current = transform.rotation;
-            quaternion want = quaternion.LookRotationSafe(new float3(aim.x, 0f, aim.y), math.up());
+            quaternion want = Plane.Is2D
+                ? quaternion.RotateZ(math.atan2(aim.y, aim.x) - (Facing2D == HordeFacing2D.ROTATE_FACING_UP ? math.PI * .5f : 0f))
+                : quaternion.LookRotationSafe(new float3(aim.x, 0f, aim.y), math.up());
 
             /*
              * Not written when it is already right, and the saving is the write rather than the arithmetic. Unity's
@@ -877,6 +911,23 @@ namespace MiHordeTraffic.Movement
             if (math.abs(math.dot(current.value, want.value)) >= FACING_SETTLED_DOT) return;
 
             transform.rotation = math.slerp(current, want, math.saturate(TurnSpeed * DeltaTime));
+        }
+
+        /*
+         * Mirrored through the scale rather than a SpriteRenderer's flipX, because a job can reach the transform and
+         * nothing else, and because the scale also mirrors anything parented to the body, such as a held weapon.
+         */
+        private static void FlipTowards(TransformAccess transform, float sideways)
+        {
+            if (math.abs(sideways) < FLIP_DEAD_ZONE) return;
+
+            float3 scale = transform.localScale;
+            float wanted = math.abs(scale.x) * math.sign(sideways);
+
+            if (wanted == scale.x) return;
+
+            scale.x = wanted;
+            transform.localScale = scale;
         }
 
     }

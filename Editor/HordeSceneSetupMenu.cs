@@ -36,7 +36,16 @@ namespace MiHordeTraffic.EditorTools
         private static readonly List<HordeSceneIssue> ISSUES = new List<HordeSceneIssue>();
 
         [MenuItem("Tools/MiHordeTraffic/Set Up Scene")]
-        private static void SetUpScene()
+        private static void SetUpScene() => SetUp(HordeSpace.WORLD_3D);
+
+        /*
+         * The same components as a 3D scene, with the driver switched to 2D. Separation needs nothing, because it reads
+         * the driver and turns its default XZ into XY on its own, and the mover keeps sprites unrotated by default.
+         */
+        [MenuItem("Tools/MiHordeTraffic/Set Up 2D Scene")]
+        private static void SetUp2DScene() => SetUp(HordeSpace.WORLD_2D);
+
+        private static void SetUp(HordeSpace space)
         {
             SeparationSystem separation = Object.FindFirstObjectByType<SeparationSystem>();
             GameObject host = separation ? separation.gameObject : CreateHost();
@@ -47,7 +56,7 @@ namespace MiHordeTraffic.EditorTools
 
             HordeFlowFieldDriver driver = Ensure<HordeFlowFieldDriver>(host);
 
-            Ensure<HordePathScheduler>(host);
+            HordePathScheduler scheduler = Ensure<HordePathScheduler>(host);
             Ensure<HordeFlowAdvisor>(host);
 
             HordeFlowMovement movement = Ensure<HordeFlowMovement>(host);
@@ -55,12 +64,19 @@ namespace MiHordeTraffic.EditorTools
 
             Wire(movement, "driver", driver);
             Wire(gizmos, "driver", driver);
+            SetSpace(driver, space);
+
+            /*
+             * The scheduler's own default is the NavMeshAgent baseline, which a 2D scene cannot run, so the 2D setup
+             * says flow field outright rather than leaving the scheduler to fall back and warn every play.
+             */
+            if (space == HordeSpace.WORLD_2D) SetEnum(scheduler, "technique", (int)HordePathTechnique.FLOW_FIELD);
 
             Selection.activeGameObject = host;
 
             EditorSceneManager.MarkSceneDirty(host.scene);
 
-            Debug.Log($"[MiHordeTraffic] scene set up on '{host.name}'.", host);
+            Debug.Log($"[MiHordeTraffic] {(space == HordeSpace.WORLD_2D ? "2D" : "3D")} scene set up on '{host.name}'.", host);
 
             CheckScene();
         }
@@ -105,6 +121,21 @@ namespace MiHordeTraffic.EditorTools
             T existing = host.GetComponent<T>();
 
             return existing ? existing : Undo.AddComponent<T>(host);
+        }
+
+        private static void SetSpace(HordeFlowFieldDriver driver, HordeSpace space) => SetEnum(driver, "space", (int)space);
+
+        private static void SetEnum(Component target, string field, int value)
+        {
+            if (!target) return;
+
+            SerializedObject serialized = new SerializedObject(target);
+            SerializedProperty property = serialized.FindProperty(field);
+
+            if (property == null) return;
+
+            property.enumValueIndex = value;
+            serialized.ApplyModifiedProperties();
         }
 
         /*

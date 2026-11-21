@@ -70,7 +70,11 @@ namespace MiHordeTraffic.Setup
                     "HordeFlowFieldDriver has no target, so the field has nothing to expand from.",
                     "Assign whatever the crowd should walk towards to the driver's Target field."));
 
-            if (scheduler && scheduler.Technique == HordePathTechnique.NAVMESH_AGENT)
+            if (scheduler && scheduler.Technique == HordePathTechnique.NAVMESH_AGENT && driver && driver.Space == HordeSpace.WORLD_2D)
+                into.Add(new HordeSceneIssue(HordeIssueSeverity.WARNING,
+                    "The scheduler is set to NAVMESH_AGENT in a 2D scene, where there is no navmesh for agents to use. It will run FLOW_FIELD instead.",
+                    "Set the scheduler's Technique to FLOW_FIELD."));
+            else if (scheduler && scheduler.Technique == HordePathTechnique.NAVMESH_AGENT)
                 into.Add(new HordeSceneIssue(HordeIssueSeverity.ADVICE,
                     "The scheduler is set to NAVMESH_AGENT, which hands every body back to its own NavMeshAgent.",
                     "Set Technique to FLOW_FIELD unless you are deliberately measuring the baseline."));
@@ -79,12 +83,42 @@ namespace MiHordeTraffic.Setup
              * Checked last because it is the one that needs the scene to have been baked rather than merely
              * populated, and a scene that is missing components is not yet worth telling about its navmesh.
              */
-            if (NavMesh.CalculateTriangulation().vertices.Length == 0)
+            if (driver && driver.Space == HordeSpace.WORLD_2D)
+            {
+                Inspect2D(driver, into);
+            }
+            else if (NavMesh.CalculateTriangulation().vertices.Length == 0)
+            {
                 into.Add(new HordeSceneIssue(HordeIssueSeverity.BLOCKING,
                     "There is no navmesh in the scene, so the grid bake will find no walkable ground at all.",
-                    "Bake a NavMeshSurface before pressing play."));
+                    "Bake a NavMeshSurface before pressing play, or set the driver's Space to WORLD_2D for a 2D scene."));
+            }
 
             into.Sort((a, b) => a.Severity.CompareTo(b.Severity));
+        }
+
+        /*
+         * The 2D bake has no navmesh to be missing, so what goes wrong instead is the bake being told nothing about where
+         * the walls are, or the crowd itself standing on a layer the bake treats as wall.
+         */
+        private static void Inspect2D(HordeFlowFieldDriver driver, List<HordeSceneIssue> into)
+        {
+            if (driver.BlockingLayers.value == 0 && !driver.HasFloorTilemaps)
+                into.Add(new HordeSceneIssue(HordeIssueSeverity.WARNING,
+                    "The 2D driver has no Blocking Layers and no Floor Tilemaps, so the whole grid area is open ground with no walls.",
+                    "Set Blocking Layers to the layers your wall colliders are on, or assign Floor Tilemaps."));
+
+            HordeAgent[] bodies = Object.FindObjectsByType<HordeAgent>(FindObjectsSortMode.None);
+
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                if ((driver.BlockingLayers.value & (1 << bodies[i].gameObject.layer)) == 0 || !bodies[i].GetComponent<Collider2D>()) continue;
+
+                into.Add(new HordeSceneIssue(HordeIssueSeverity.WARNING,
+                    $"Horde bodies such as '{bodies[i].name}' have a Collider2D on one of the driver's Blocking Layers, so bodies present at bake time carve holes in the grid.",
+                    "Put the bodies on a layer that is not in the driver's Blocking Layers."));
+                break;
+            }
         }
 
         /*

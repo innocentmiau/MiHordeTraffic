@@ -28,7 +28,7 @@ namespace MiHordeTraffic.Pathing.FlowField
     public class HordeObstacle : MonoBehaviour
     {
 
-        [Tooltip("Size of the footprint in world units. Left at zero it is taken from a Collider on this object.")]
+        [Tooltip("Size of the footprint in world units. Left at zero it is taken from a Collider or Collider2D on this object.")]
         [SerializeField] private Vector3 size = Vector3.zero;
 
         [Tooltip("Offset of the footprint from this object's position.")]
@@ -54,12 +54,10 @@ namespace MiHordeTraffic.Pathing.FlowField
 
         private void Reset()
         {
-            Collider collider = GetComponent<Collider>();
+            if (!HordeFootprint.TryColliderBounds(this, out Bounds bounds)) return;
 
-            if (!collider) return;
-
-            size = collider.bounds.size;
-            centre = collider.bounds.center - transform.position;
+            size = bounds.size;
+            centre = bounds.center - transform.position;
         }
 
         private void OnEnable() => Block();
@@ -130,9 +128,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         {
             if (size != Vector3.zero) return new Bounds(transform.position + centre, size);
 
-            Collider collider = GetComponent<Collider>();
-
-            if (collider) return collider.bounds;
+            if (HordeFootprint.TryColliderBounds(this, out Bounds bounds)) return bounds;
 
             return new Bounds(transform.position + centre, transform.lossyScale);
         }

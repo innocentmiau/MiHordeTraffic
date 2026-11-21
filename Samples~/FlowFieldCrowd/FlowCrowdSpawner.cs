@@ -1,3 +1,4 @@
+using System.Collections;
 using MiHordeTraffic.Pathing.FlowField;
 using MiHordeTraffic.Spawning;
 using UnityEngine;
@@ -41,9 +42,21 @@ namespace MiHordeTraffic.Samples.FlowFieldCrowd
 
         [SerializeField] private bool spawnOnStart = true;
 
-        private void Start()
+        private static bool FieldReady => HordeFlowFieldDriver.Instance && HordeFlowFieldDriver.Instance.Field.IsBaked;
+
+        /*
+         * The driver bakes in its own Start, and Unity does not say whose Start runs first. Spawning straight away
+         * lost that race about half the time: every TryFind said no because there was no grid yet, and the wave came
+         * out empty. Waiting for the bake also covers a driver with Bake On Start off, the wave lands once it bakes.
+         */
+        private IEnumerator Start()
         {
-            if (spawnOnStart) SpawnWave(count);
+            if (!spawnOnStart) yield break;
+
+            while (!FieldReady)
+                yield return null;
+
+            SpawnWave(count);
         }
 
         /// <summary>

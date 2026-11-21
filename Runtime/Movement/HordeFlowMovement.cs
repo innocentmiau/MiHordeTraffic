@@ -142,6 +142,13 @@ namespace MiHordeTraffic.Movement
          */
         [Header("Facing")]
         [SerializeField] private bool requireFacing = false;
+
+        /*
+         * NONE by default, because most top down sprites are animated per direction rather than turned, and rotating
+         * one that was drawn upright lays it on its side. Turning speed for the two rotating options is Turn Speed above.
+         */
+        [Tooltip("WORLD_2D only. How a sprite body shows its heading. NONE leaves the transform alone, so read the heading for animation instead.")]
+        [SerializeField] private HordeFacing2D facing2D = HordeFacing2D.NONE;
         [Tooltip("Metres from the goal at which a body counts as arrived and stops being driven.")]
         [SerializeField, Min(0f)] private float arriveRadius = 1.5f;
         [Tooltip("Metres over which a body eases to a stop before that, rather than switching off at a line.")]
@@ -295,8 +302,8 @@ namespace MiHordeTraffic.Movement
         /// The heading and separation push most recently used for a body, for debug drawing.
         /// </summary>
         /// <param name="index">The body's FlowIndex.</param>
-        /// <param name="heading">Direction the body is steering, which lags the field by the turn rate.</param>
-        /// <param name="push">Separation push it was given.</param>
+        /// <param name="heading">Direction the body is steering on the ground, which lags the field by the turn rate. World XZ in 3D and world XY in 2D.</param>
+        /// <param name="push">Separation push it was given, in world space.</param>
         /// <returns>True when the index is live.</returns>
         public bool TryGetState(int index, out float2 heading, out float3 push)
         {
@@ -738,6 +745,9 @@ namespace MiHordeTraffic.Movement
             return new HordeFlowMoveJob
             {
                 Grid = field.Grid,
+                Plane = driver.Plane,
+                FollowGround = driver.Space == HordeSpace.WORLD_3D,
+                Facing2D = facing2D,
                 Mode = driver.DirectionMode,
                 MaximumRise = driver.MaximumSlope * field.Grid.CellSize,
                 Walkable = field.Walkable,
@@ -1065,7 +1075,7 @@ namespace MiHordeTraffic.Movement
             _settled[slot] = 0;
             _stalled[slot] = 0;
             _stallTime[slot] = 0f;
-            _lastPosition[slot] = body.transform.position;
+            _lastPosition[slot] = driver ? driver.Plane.ToGrid(body.transform.position) : (float3)body.transform.position;
 
             body.FlowIndex = slot;
             _bodies.Add(body);

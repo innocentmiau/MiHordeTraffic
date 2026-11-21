@@ -22,17 +22,17 @@ namespace MiHordeTraffic.Pathing.FlowField
         [Tooltip("POINT is a bare position. BOX and SPHERE are seeded along their whole edge, so bodies surround the target instead of queueing at one side of it.")]
         [SerializeField] private HordeTargetShape shape = HordeTargetShape.BOX;
 
-        [Tooltip("Full width and depth of the footprint in world units. Left at zero it is taken from a Collider on this object.")]
+        [Tooltip("Full width and depth of the footprint in world units, or width and height in a 2D scene. Left at zero it is taken from a Collider or Collider2D on this object.")]
         [SerializeField] private Vector2 size = Vector2.zero;
 
-        [Tooltip("Radius of the footprint in world units, for SPHERE. Left at zero it is taken from a Collider on this object.")]
+        [Tooltip("Radius of the footprint in world units, for SPHERE. Left at zero it is taken from a Collider or Collider2D on this object.")]
         [SerializeField, Min(0f)] private float radius = 0f;
 
         [Tooltip("Offset of the footprint from this object's position.")]
         [SerializeField] private Vector3 centre = Vector3.zero;
 
         /// <summary>
-        /// Where this target is and how much ground it covers, as the routing reads it.
+        /// Where this target is in world space and how much ground it covers along the ground axes.
         /// </summary>
         public HordeGoalArea Area
         {
@@ -49,16 +49,19 @@ namespace MiHordeTraffic.Pathing.FlowField
             }
         }
 
+        /*
+         * Reset runs in the editor, where there may be no driver yet to say which way the ground faces, so the kind of
+         * collider found decides it instead. A Collider2D only ever means a 2D scene.
+         */
         private void Reset()
         {
-            Collider collider = GetComponent<Collider>();
+            if (!HordeFootprint.TryColliderBounds(this, out Bounds bounds)) return;
 
-            if (!collider) return;
+            HordePlane plane = GetComponent<Collider2D>() ? HordePlane.For(HordeSpace.WORLD_2D) : HordePlane.Active;
+            float2 ground = plane.Ground(bounds.size);
 
-            Bounds bounds = collider.bounds;
-
-            size = new Vector2(bounds.size.x, bounds.size.z);
-            radius = math.max(bounds.extents.x, bounds.extents.z);
+            size = new Vector2(ground.x, ground.y);
+            radius = math.cmax(ground) * .5f;
             centre = bounds.center - transform.position;
         }
 
@@ -70,45 +73,49 @@ namespace MiHordeTraffic.Pathing.FlowField
         {
             if (size != Vector2.zero) return new float2(size.x, size.y) * .5f;
 
-            Collider collider = GetComponent<Collider>();
+            HordePlane plane = HordePlane.Active;
 
-            if (collider) return new float2(collider.bounds.extents.x, collider.bounds.extents.z);
+            if (HordeFootprint.TryColliderBounds(this, out Bounds bounds)) return plane.Ground(bounds.extents);
 
-            return new float2(transform.lossyScale.x, transform.lossyScale.z) * .5f;
+            return plane.Ground(transform.lossyScale) * .5f;
         }
 
         private float ResolveRadius()
         {
             if (radius > 0f) return radius;
 
-            Collider collider = GetComponent<Collider>();
+            HordePlane plane = HordePlane.Active;
 
-            if (collider) return math.max(collider.bounds.extents.x, collider.bounds.extents.z);
+            if (HordeFootprint.TryColliderBounds(this, out Bounds bounds)) return math.cmax(plane.Ground(bounds.extents));
 
-            return math.max(transform.lossyScale.x, transform.lossyScale.z) * .5f;
+            return math.cmax(plane.Ground(transform.lossyScale)) * .5f;
         }
 
         private void OnDrawGizmosSelected()
         {
             HordeGoalArea area = Area;
+            Vector3 middle = new Vector3(area.Centre.x, area.Centre.y, area.Centre.z);
 
             Gizmos.color = new Color(1f, .2f, .6f, .6f);
 
             if (shape == HordeTargetShape.SPHERE)
             {
-                Gizmos.DrawWireSphere(new Vector3(area.Centre.x, area.Centre.y, area.Centre.z), ResolveRadius());
+                Gizmos.DrawWireSphere(middle, ResolveRadius());
                 return;
             }
 
             if (shape == HordeTargetShape.POINT)
             {
-                Gizmos.DrawWireSphere(new Vector3(area.Centre.x, area.Centre.y, area.Centre.z), .25f);
+                Gizmos.DrawWireSphere(middle, .25f);
                 return;
             }
 
             float2 extents = ResolveExtents();
 
-            Gizmos.DrawWireCube(new Vector3(area.Centre.x, area.Centre.y, area.Centre.z), new Vector3(extents.x * 2f, .2f, extents.y * 2f));
+            /*
+             * Drawn flat on the ground plane, built in grid space and converted, so the box lies on XY in a 2D scene.
+             */
+            Gizmos.DrawWireCube(middle, (Vector3)HordePlane.Active.ToWorld(new float3(extents.x * 2f, .2f, extents.y * 2f)));
         }
 
     }

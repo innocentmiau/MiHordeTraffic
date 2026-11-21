@@ -29,6 +29,7 @@ Video: https://www.youtube.com/watch?v=vscjLy909bU
 - **Runtime obstacles and gates.** Buildings block ground without re-baking; gates hold a queue until they open.
 - **Shaped targets.** A box or sphere goal, so a crowd surrounds a building instead of queueing at one corner.
 - **Terrain height.** Hills cost more than flat ground; ledges can be refused.
+- **Top down 2D.** The same crowd on the XY plane, with walls read from 2D colliders and tilemaps. No navmesh needed.
 - **Freeze and resume.** A frozen body costs nothing and still occupies its ground.
 - **Runtime technique switching**, so you can measure this against stock `NavMeshAgent` on the same crowd.
 - **Presets** for everything where "is 5 a lot?" has no answer, plus a scene setup tool and a live advisor.
@@ -43,13 +44,13 @@ Package Manager, **Install package from git URL**:
 https://github.com/innocentmiau/MiHordeTraffic.git
 ```
 
-Unity 6000.3 or newer. Pulls in Burst, Collections, Mathematics and AI Navigation.
+Unity 6000.3 or newer. Pulls in Burst, Collections, Mathematics and AI Navigation, plus the built in 2D Physics and Tilemap modules.
 
 ---
 
 ## Setup
 
-**Package Manager > Samples** has two, **Flow Field Crowd** and **NavMesh Agent Crowd**. Each is self contained, so install only the one you want.
+**Package Manager > Samples** has three, **Flow Field Crowd**, **Flow Field Crowd 2D** and **NavMesh Agent Crowd**. Each is self contained, so install only the one you want.
 
 1. Bake a NavMesh.
 2. **Tools > MiHordeTraffic > Set Up Scene**: adds everything missing to one manager object.
@@ -57,6 +58,20 @@ Unity 6000.3 or newer. Pulls in Burst, Collections, Mathematics and AI Navigatio
 4. Put **`HordeAgent`** on your entity prefab. That is the only component it needs.
 
 **Tools > MiHordeTraffic > Check Scene** reports anything wrong, and runs automatically on play.
+
+### 2D
+
+For a top down 2D game on the XY plane. No navmesh is involved: walls come from your 2D colliders.
+
+1. Put your wall colliders (a `TilemapCollider2D`, optionally with a `CompositeCollider2D`, or any other `Collider2D`) on a layer of their own, such as `Walls`.
+2. **Tools > MiHordeTraffic > Set Up 2D Scene**.
+3. On the driver, set **Blocking Layers** to that layer, and assign the driver's **Target**.
+4. Optionally assign **Floor Tilemaps**. A cell is then ground only where a floor tile is, which handles holes and irregular map edges without walling them.
+5. Put **`HordeAgent`** on a sprite prefab. Keep it, and any trigger or runtime obstacle, **off** the blocking layers, or it is baked as a wall.
+
+The **Flow Field Crowd 2D** sample has a spawner and a target that follows the mouse.
+
+Separation set to `XZ` (the default) is read as the ground plane, so it separates on XY in a 2D scene without changing anything. **Facing 2D** on the mover decides what a sprite does with its heading: `NONE` (the default, for sprites animated per direction), `FLIP_X`, or rotating about Z.
 
 A `NavMeshAgent` is **not** required. `HordeEntity` is optional, for `NavMeshAgent` pathing instead of the field.
 
@@ -262,7 +277,7 @@ Markers are stripped from non development builds, and the report says so rather 
 ## Limitations
 
 - **One walkable surface per column.** No stacked floors or bridges over ground.
-- **XZ only.** Separation supports `XY` and `FULL_3D`; the field does not.
+- **Top down 2D only.** 2D runs on the XY plane as a floor seen from above. Side view platformers, where gravity pulls along Y, are not something a flow field over a floor describes.
 - **One goal at a time.** The whole crowd expands from a single target, though that target can have a shape.
 - **No routing to unreachable goals.** A crowd sealed off from the target holds position rather than walking to the closest point it can reach. **Unreachable Goal** switches it back to pressing towards the target.
 - **Baked walkability.** Level geometry changes need a re-bake; runtime obstacles do not.
@@ -272,7 +287,7 @@ Markers are stripped from non development builds, and the report says so rather 
 ## Roadmap
 
 - Layered grid, for surfaces above each other
-- 2D on the XY plane
+- NavMeshPlus navmeshes as a 2D walkability source
 - Multiple goals, one field each, sharing the grid
 - Walk to the nearest reachable point when the goal is cut off
 - Incremental expansion instead of full rebuilds

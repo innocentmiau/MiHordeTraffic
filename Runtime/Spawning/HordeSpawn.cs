@@ -92,8 +92,15 @@ namespace MiHordeTraffic.Spawning
 
             GridFlowField field = driver.Field;
             HordeGridInfo grid = field.Grid;
+            HordePlane plane = driver.Plane;
 
-            int2 origin = grid.CellOf(position);
+            /*
+             * The search runs in grid space and the answer is converted back, so the same code places a body on a 3D
+             * floor or on a 2D map. In 2D the depth asked for is kept, since that is what the game sorts bodies by.
+             */
+            float3 wanted = plane.ToGrid(position);
+
+            int2 origin = grid.CellOf(wanted);
             int reach = (int)math.ceil(math.max(maximumDistance, 0f) / grid.CellSize);
             float allowed = maximumDistance * maximumDistance;
             float crowded = CrowdedAt(maximumFill);
@@ -133,7 +140,7 @@ namespace MiHordeTraffic.Spawning
                     if (field.Density[index] > crowded) continue;
 
                     float3 centre = grid.CentreOf(cell);
-                    float away = math.distancesq(new float2(centre.x, centre.z), new float2(position.x, position.z));
+                    float away = math.distancesq(centre.xz, wanted.xz);
 
                     if (away > allowed || away >= bestDistance) continue;
 
@@ -144,7 +151,7 @@ namespace MiHordeTraffic.Spawning
 
                 if (best < 0) continue;
 
-                spawn = Scatter(grid, field, bestCell, best);
+                spawn = (Vector3)plane.ToWorld(Scatter(grid, field, bestCell, best, driver.Space == HordeSpace.WORLD_2D ? wanted.y : float.NaN));
                 return true;
             }
 
@@ -164,7 +171,8 @@ namespace MiHordeTraffic.Spawning
         /// <summary>
         /// A point inside a cell rather than its centre, so a wave does not stack on one spot.
         /// </summary>
-        private static Vector3 Scatter(HordeGridInfo grid, GridFlowField field, int2 cell, int index)
+        /// <param name="depth">Height to keep instead of reading the ground, or NaN to stand on the ground.</param>
+        private static float3 Scatter(HordeGridInfo grid, GridFlowField field, int2 cell, int index, float depth)
         {
             uint seed = math.hash(new int3(cell.x, cell.y, (int)_calls++));
 
@@ -179,7 +187,9 @@ namespace MiHordeTraffic.Spawning
              * Read where the body is actually being put rather than at the cell centre, since the scatter moves it
              * up to most of a cell away and on a slope that is a real difference in height.
              */
-            return new Vector3(point.x, HordeGroundHeight.At(grid, field.Walkable, field.Height, point, index), point.z);
+            point.y = float.IsNaN(depth) ? HordeGroundHeight.At(grid, field.Walkable, field.Height, point, index) : depth;
+
+            return point;
         }
 
     }

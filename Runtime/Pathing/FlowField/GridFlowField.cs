@@ -6,15 +6,14 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Profiling;
 using UnityEngine;
-using UnityEngine.AI;
 
 namespace MiHordeTraffic.Pathing.FlowField
 {
     /*
      * Owns the grid, the buffers and the schedule. The bake is separate from the expansion and runs once, because
-     * NavMesh.SamplePosition is a call out to native per cell and doing that per rebuild would cost far more than
-     * the routing it serves. The expansion afterwards touches no engine API at all, which is the whole reason for
-     * baking rather than querying the navmesh as we go.
+     * asking the engine about a cell, through the navmesh or through 2D physics, is a call out to native per cell and
+     * doing that per rebuild would cost far more than the routing it serves.
+     * The expansion afterwards touches no engine API at all, which is the whole reason for baking rather than querying as we go.
      *
      * Cost starts at one everywhere and is the hook congestion writes into. Nothing else about the expansion has
      * to know congestion exists.
@@ -24,12 +23,6 @@ namespace MiHordeTraffic.Pathing.FlowField
     /// </summary>
     public class GridFlowField : IDisposable
     {
-
-        /*
-         * A centimetre. Below this a hit is on the cell centre as far as anything here is concerned, and asking for
-         * less would reject cells over an exact difference that means nothing on a navmesh.
-         */
-        private const float EXACT_SAMPLE_TOLERANCE = .01f;
 
         private static readonly ProfilerMarker BAKE_MARKER = new ProfilerMarker("MiHordeTraffic.Pathing.Bake");
         private static readonly ProfilerMarker BUILD_MARKER = new ProfilerMarker("MiHordeTraffic.Pathing.FlowField");
@@ -127,6 +120,11 @@ namespace MiHordeTraffic.Pathing.FlowField
         public HordeGridInfo Grid { get; private set; }
 
         /// <summary>
+        /// The plane this field was baked for, which is how world positions handed to it are turned into cells.
+        /// </summary>
+        public HordePlane Plane { get; private set; }
+
+        /// <summary>
         /// Whether a bake has produced a usable grid.
         /// </summary>
         public bool IsBaked => _walkable.IsCreated;
@@ -183,18 +181,19 @@ namespace MiHordeTraffic.Pathing.FlowField
         public NativeArray<float> Integration => _integration;
 
         /// <summary>
-        /// Samples the navmesh once per cell to decide what is walkable. Main thread, and not cheap, so call it
+        /// Asks a walkability source about every cell once to decide what is walkable. Main thread, and not cheap, so call it
         /// when the map changes rather than when the crowd does.
         /// </summary>
-        /// <param name="bounds">Area to cover.</param>
+        /// <param name="bounds">Area to cover, in grid space with the ground on XZ.</param>
         /// <param name="cellSize">Width of one cell.</param>
-        /// <param name="sampleHeight">How far above and below a cell centre to look for the navmesh.</param>
+        /// <param name="source">What decides whether a cell is ground, such as the navmesh or 2D colliders.</param>
         /// <param name="edgeClearance">How far from unwalkable ground a cell must be to count as walkable.</param>
-        /// <param name="areaMask">Navmesh areas to accept.</param>
-        /// <param name="sampleAccuracy">How closely a cell has to sit on the navmesh. One accepts only cells whose centre is on it.</param>
-        public void Bake(Bounds bounds, float cellSize, float sampleHeight, float edgeClearance, int areaMask, float sampleAccuracy = 1f)
+        /// <param name="plane">The plane the scene is on, kept so the queries that take a world position can convert it.</param>
+        public void Bake(Bounds bounds, float cellSize, IHordeWalkabilitySource source, float edgeClearance, HordePlane plane = default)
         {
             Dispose();
+
+            Plane = plane;
 
             HordeGridInfo grid = new HordeGridInfo
             {
@@ -234,46 +233,18 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             int walkable = 0;
 
-            /*
-             * Interpolated so that zero is the half cell slack this used to have unconditionally, and one is as
-             * close to on the navmesh as floating point allows. The floor is a centimetre rather than nothing,
-             * because a hit on a polygon is projected onto it and does not come back bit identical.
-             */
-            float tolerance = math.lerp(grid.CellSize * .5f, EXACT_SAMPLE_TOLERANCE, math.saturate(sampleAccuracy));
-
             using (BAKE_MARKER.Auto())
             {
+                source.Begin(grid);
+
                 for (int i = 0; i < count; i++)
                 {
-                    float3 centre = grid.CentreOf(grid.CellAt(i));
-
                     _cost[i] = 1f;
 
-                    if (!NavMesh.SamplePosition(centre, out NavMeshHit hit, sampleHeight, areaMask)) continue;
-
-                    /*
-                     * The question is whether this cell is on the navmesh, not whether the navmesh is near it, and
-                     * those are different by exactly the amount that puts bodies inside walls.
-                     *
-                     * SamplePosition hands back the nearest point on a surface however far away it is, so a cell
-                     * centre buried in a wall finds the navmesh at the wall's foot and reports a hit. Measured
-                     * against half a cell that hit was accepted, the cell was marked walkable, and its height came
-                     * from the edge it found: a strip of invented ground around every obstacle in the level, half a
-                     * cell wide, that bodies stand on with the wall through them.
-                     *
-                     * Asking for the hit to land on the cell centre is the honest test, and a hit for a centre
-                     * genuinely inside a navmesh polygon comes back at that centre, so the tolerance only has to
-                     * cover floating point rather than any real distance.
-                     *
-                     * It stays adjustable because tightening it shrinks the walkable area at every edge by up to
-                     * the part of a cell that hangs off the navmesh, and a corridor already only a cell or two wide
-                     * can lose its middle. The answer to that is smaller cells rather than a looser test, since a
-                     * looser test does not recover a corridor that is genuinely too narrow, it invents one.
-                     */
-                    if (math.distancesq(((float3)hit.position).xz, centre.xz) > tolerance * tolerance) continue;
+                    if (!source.Sample(grid.CentreOf(grid.CellAt(i)), out float height)) continue;
 
                     _walkable[i] = 1;
-                    _height[i] = hit.position.y;
+                    _height[i] = height;
                     walkable++;
                 }
             }
@@ -515,7 +486,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// Which way a body standing at a world position should walk.
         /// </summary>
         /// <param name="position">World position.</param>
-        /// <param name="direction">Direction on the grid plane, or zero when there is no route.</param>
+        /// <param name="direction">Direction along the ground, world XZ in 3D and world XY in 2D, or zero when there is no route.</param>
         /// <returns>True when the position is on the grid and the goal is reachable from it.</returns>
         public bool TryGetFlow(float3 position, out float2 direction)
         {
@@ -523,7 +494,7 @@ namespace MiHordeTraffic.Pathing.FlowField
 
             if (!IsBuilt) return false;
 
-            int index = Grid.IndexOf(position);
+            int index = Grid.IndexOf(Plane.ToGrid(position));
             if (index < 0 || _walkable[index] == 0) return false;
 
             direction = HordeFlowDirection.At(Grid, _walkable, _integration, index, DirectionMode);

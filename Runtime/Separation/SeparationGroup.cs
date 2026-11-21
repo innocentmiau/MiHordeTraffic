@@ -4,6 +4,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Profiling;
 using UnityEngine;
+using MiHordeTraffic.Pathing.FlowField;
 using UnityEngine.Jobs;
 
 namespace MiHordeTraffic.Separation
@@ -138,6 +139,15 @@ namespace MiHordeTraffic.Separation
             SeparationPlane.FULL_3D => new float3(1f, 1f, 1f),
             _ => new float3(1f, 0f, 1f)
         };
+
+        /*
+         * XZ is the default on every settings asset, and in a 2D scene it is never what anybody meant: it separates
+         * along world Z, which is depth, and leaves the screen's vertical axis alone, so bodies stack on top of each
+         * other on screen while pushing each other towards and away from the camera. Rather than make every 2D project
+         * remember to change it, XZ is read as the ground plane, which in a 2D scene is XY. FULL_3D is left as asked.
+         */
+        private SeparationPlane ResolvePlane() =>
+            _settings.Plane == SeparationPlane.XZ && HordePlane.Active.Is2D ? SeparationPlane.XY : _settings.Plane;
 
         /// <summary>
         /// Puts a body on the roster. Only ever called with no job in flight.
@@ -436,7 +446,7 @@ namespace MiHordeTraffic.Separation
             }
 
             float cellSize = CellSize;
-            float3 planeMask = MaskFor(_settings.Plane);
+            float3 planeMask = MaskFor(ResolvePlane());
 
             _grid.Clear();
 

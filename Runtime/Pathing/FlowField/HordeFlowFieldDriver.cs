@@ -5,6 +5,8 @@ using Unity.Mathematics;
 using MiHordeTraffic.Tuning;
 using UnityEngine;
 using UnityEngine.AI;
+using UnityEngine.Serialization;
+using UnityEngine.Tilemaps;
 using Debug = UnityEngine.Debug;
 
 namespace MiHordeTraffic.Pathing.FlowField
@@ -37,6 +39,14 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// </summary>
         public static HordeFlowFieldDriver Instance => _instance;
 
+        /*
+         * Set once per scene rather than per component, because a scene is one or the other. Every obstacle, target
+         * and body converts through this driver's plane, so they cannot disagree about which way the ground faces.
+         */
+        [Header("Space")]
+        [Tooltip("WORLD_3D walks a navmesh on the XZ floor. WORLD_2D walks a top down 2D scene on the XY plane, with walls taken from 2D colliders.")]
+        [SerializeField] private HordeSpace space = HordeSpace.WORLD_3D;
+
         [Header("Grid")]
         /*
          * Fitting to the navmesh itself rather than to a surface volume or a hand typed box, because those two
@@ -45,7 +55,13 @@ namespace MiHordeTraffic.Pathing.FlowField
          * real navmesh the grid had never heard of, then standing still forever because every step they could take
          * failed a walkability test against cells that did not exist.
          */
-        [SerializeField] private bool fitToNavMesh = true;
+        /*
+         * In 2D there is no navmesh to fit to, and the nearest thing to one is the floor tilemaps, or failing those the
+         * walls, since the walls of a top down level are what enclose it.
+         */
+        [Tooltip("Fit the grid to the level. 3D fits to the baked navmesh. 2D fits to the Floor Tilemaps, or to the colliders on the Blocking Layers when there are none. Off uses Bounds.")]
+        [FormerlySerializedAs("fitToNavMesh")]
+        [SerializeField] private bool fitToLevel = true;
         [SerializeField, Min(0f)] private float fitMargin = 2f;
         [SerializeField] private NavMeshSurface surface;
         [SerializeField] private Bounds bounds = new Bounds(Vector3.zero, new Vector3(100f, 10f, 100f));
@@ -91,6 +107,17 @@ namespace MiHordeTraffic.Pathing.FlowField
         [Tooltip("How closely a cell must sit on the navmesh to count as walkable. 1 accepts only cells whose centre is on it. Lower grows the grid past the navmesh edge and lets bodies clip walls.")]
         [SerializeField, Range(0f, 1f)] private float sampleAccuracy = 1f;
         [SerializeField] private bool bakeOnStart = true;
+
+        /*
+         * Only read in 2D. Default rather than everything, because everything would include whatever layer the
+         * bodies themselves are on, and a crowd standing on the map when it is baked would carve itself out of it.
+         */
+        [Header("2D")]
+        [Tooltip("WORLD_2D only. Layers whose 2D colliders are walls. Keep the bodies, triggers and runtime obstacles off these layers.")]
+        [SerializeField] private LayerMask blockingLayers = 1;
+
+        [Tooltip("WORLD_2D only. When set, a cell is only ground where one of these tilemaps has a tile. Leave empty to treat the whole grid area as ground except where walls are.")]
+        [SerializeField] private Tilemap[] floorTilemaps = new Tilemap[0];
 
         [Header("Field")]
         [SerializeField] private Transform target;
@@ -191,6 +218,39 @@ namespace MiHordeTraffic.Pathing.FlowField
         public GridFlowField Field => _field;
 
         /// <summary>
+        /// Whether this scene is 3D on XZ or top down 2D on XY.
+        /// </summary>
+        public HordeSpace Space => space;
+
+        /// <summary>
+        /// Layers whose 2D colliders the 2D bake treats as walls.
+        /// </summary>
+        public LayerMask BlockingLayers => blockingLayers;
+
+        /// <summary>
+        /// Whether any floor tilemap is assigned for the 2D bake.
+        /// </summary>
+        public bool HasFloorTilemaps
+        {
+            get
+            {
+                for (int i = 0; i < floorTilemaps.Length; i++)
+                    if (floorTilemaps[i]) return true;
+
+                return false;
+            }
+        }
+
+        /*
+         * Everything the grid reads or writes is in grid space, with the ground on XZ. Whatever arrives from the world
+         * is converted through this on the way in, and whatever goes back out is converted through it on the way out.
+         */
+        /// <summary>
+        /// The conversion between world space and grid space for this scene.
+        /// </summary>
+        public HordePlane Plane => HordePlane.For(space);
+
+        /// <summary>
         /// What the field expands from.
         /// </summary>
         public Transform Target => target;
@@ -241,10 +301,10 @@ namespace MiHordeTraffic.Pathing.FlowField
         [ContextMenu("Bake Grid")]
         public void BakeGrid()
         {
-            Bounds area = ResolveBounds();
+            Bounds area = Plane.ToGrid(ResolveBounds());
 
             Stopwatch watch = Stopwatch.StartNew();
-            _field.Bake(area, cellSize, sampleHeight, edgeClearance, NavMesh.AllAreas, sampleAccuracy);
+            _field.Bake(area, cellSize, CreateWalkabilitySource(), edgeClearance, Plane);
             watch.Stop();
 
             ClearStats();
@@ -304,13 +364,23 @@ namespace MiHordeTraffic.Pathing.FlowField
                 this);
         }
 
+        /*
+         * New every bake, because each one is configured with whatever the inspector says at that moment and holds
+         * nothing worth keeping between bakes.
+         */
+        private IHordeWalkabilitySource CreateWalkabilitySource() => space == HordeSpace.WORLD_2D
+            ? new Physics2DWalkability(Plane, blockingLayers, floorTilemaps, sampleAccuracy)
+            : new NavMeshWalkability(Plane, sampleHeight, NavMesh.AllAreas, sampleAccuracy);
+
         /// <summary>
-        /// Works out what area the grid should cover, preferring the navmesh's own extent.
+        /// Works out what area the grid should cover in world space, preferring the level's own extent.
         /// </summary>
         /// <returns>The area to bake.</returns>
         private Bounds ResolveBounds()
         {
-            if (fitToNavMesh && TryFitToNavMesh(out Bounds fitted)) return fitted;
+            if (space == HordeSpace.WORLD_2D) return fitToLevel && TryFitTo2DLevel(out Bounds level) ? level : bounds;
+
+            if (fitToLevel && TryFitToNavMesh(out Bounds fitted)) return fitted;
 
             if (surface) return new Bounds(surface.transform.TransformPoint(surface.center), surface.size);
 
@@ -342,6 +412,69 @@ namespace MiHordeTraffic.Pathing.FlowField
             fitted.Expand(new Vector3(fitMargin * 2f, math.max(fitted.size.y, 4f), fitMargin * 2f));
 
             return true;
+        }
+
+        /*
+         * Floor tilemaps first, because they are the level's own statement of where ground is. The walls are the
+         * fallback, since in a top down level the walls are what enclose it, and a margin past them costs a ring of
+         * cells that bake as blocked and is the difference between a wall at the very edge being seen or not.
+         *
+         * Bounds are compressed before they are read. A tilemap remembers the largest area it ever had tiles in, so a
+         * level that was painted big and trimmed back would otherwise bake a grid over every erased tile.
+         */
+        private bool TryFitTo2DLevel(out Bounds fitted)
+        {
+            fitted = default;
+            bool found = false;
+
+            for (int i = 0; i < floorTilemaps.Length; i++)
+            {
+                Tilemap floor = floorTilemaps[i];
+
+                if (!floor) continue;
+
+                floor.CompressBounds();
+
+                if (floor.cellBounds.size.x == 0 || floor.cellBounds.size.y == 0) continue;
+
+                Bounds world = WorldBoundsOf(floor);
+
+                if (found) fitted.Encapsulate(world);
+                else fitted = world;
+
+                found = true;
+            }
+
+            if (!found)
+            {
+                Collider2D[] colliders = FindObjectsByType<Collider2D>(FindObjectsSortMode.None);
+
+                for (int i = 0; i < colliders.Length; i++)
+                {
+                    Collider2D collider = colliders[i];
+
+                    if (!collider.enabled || collider.isTrigger || (blockingLayers.value & (1 << collider.gameObject.layer)) == 0) continue;
+
+                    if (found) fitted.Encapsulate(collider.bounds);
+                    else fitted = collider.bounds;
+
+                    found = true;
+                }
+            }
+
+            if (!found) return false;
+
+            fitted.Expand(new Vector3(fitMargin * 2f, fitMargin * 2f, 0f));
+
+            return true;
+        }
+
+        private static Bounds WorldBoundsOf(Tilemap tilemap)
+        {
+            Bounds local = tilemap.localBounds;
+            Vector3 scale = tilemap.transform.lossyScale;
+
+            return new Bounds(tilemap.transform.TransformPoint(local.center), Vector3.Scale(local.size, new Vector3(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z))));
         }
 
         [ContextMenu("Clear Stats")]
@@ -455,7 +588,7 @@ namespace MiHordeTraffic.Pathing.FlowField
          * A target with no HordeTarget on it is a point, which is what every target was before shapes existed.
          */
         /// <summary>
-        /// Where the goal is and how much ground it covers, which is a bare point unless the target has a HordeTarget.
+        /// Where the goal is and how much ground it covers in grid space, which is a bare point unless the target has a HordeTarget.
         /// </summary>
         public HordeGoalArea GoalArea
         {
@@ -469,7 +602,10 @@ namespace MiHordeTraffic.Pathing.FlowField
                     _shape = target.GetComponent<HordeTarget>();
                 }
 
-                return _shape ? _shape.Area : HordeGoalArea.Point(target.position);
+                HordeGoalArea area = _shape ? _shape.Area : HordeGoalArea.Point(target.position);
+                area.Centre = Plane.ToGrid(area.Centre);
+
+                return area;
             }
         }
 
@@ -496,7 +632,7 @@ namespace MiHordeTraffic.Pathing.FlowField
          * cells stay shut for good, with nothing in the field or the gizmos showing why.
          */
         public void BlockArea(Bounds area, HordeBlockKind kind = HordeBlockKind.SOLID, bool updateRouting = true) =>
-            _blocks.Add(new HordeBlockRequest { Area = area, Delta = 1, UpdateRouting = updateRouting, Kind = kind });
+            _blocks.Add(new HordeBlockRequest { Area = Plane.ToGrid(area), Delta = 1, UpdateRouting = updateRouting, Kind = kind });
 
         /// <summary>
         /// Gives back ground taken by a matching BlockArea, if the bake found it walkable to begin with.
@@ -505,7 +641,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <param name="updateRouting">Whether the field is expanded again for it.</param>
         /// <param name="kind">The same kind it was blocked with, or the counts will not come back to zero and the ground never reopens.</param>
         public void UnblockArea(Bounds area, HordeBlockKind kind = HordeBlockKind.SOLID, bool updateRouting = true) =>
-            _blocks.Add(new HordeBlockRequest { Area = area, Delta = -1, UpdateRouting = updateRouting, Kind = kind });
+            _blocks.Add(new HordeBlockRequest { Area = Plane.ToGrid(area), Delta = -1, UpdateRouting = updateRouting, Kind = kind });
 
         /// <summary>
         /// How many block or unblock requests have been queued and not yet applied, which is normally zero.
@@ -573,9 +709,18 @@ namespace MiHordeTraffic.Pathing.FlowField
             if (request.Delta <= 0 || request.Kind != HordeBlockKind.SOLID) return;
             if (_field.HasBakedGround(request.Area, obstacleClearance)) return;
 
-            Debug.LogWarning($"[MiHordeTraffic] A solid obstacle at {request.Area.center} covers no ground the bake found walkable, "
-                + "so it blocks nothing and switching it off will not open a path. The usual cause is that it was present when the "
-                + "NavMesh was baked, which carved a hole under it. Exclude it from the NavMesh bake and let this block it instead.", this);
+            /*
+             * The same mistake has a different cause in 2D. There is no navmesh to carve, but a collider on a blocking
+             * layer is a wall as far as the bake is concerned, so an obstacle that is also on one was baked as wall.
+             */
+            string cause = space == HordeSpace.WORLD_2D
+                ? "The usual cause is that its Collider2D is on one of the driver's Blocking Layers, so the bake already treated it as wall. "
+                    + "Put runtime obstacles on a layer the driver does not block on and let this block them instead."
+                : "The usual cause is that it was present when the NavMesh was baked, which carved a hole under it. "
+                    + "Exclude it from the NavMesh bake and let this block it instead.";
+
+            Debug.LogWarning($"[MiHordeTraffic] A solid obstacle at {(Vector3)Plane.ToWorld(request.Area.center)} covers no ground the bake found walkable, "
+                + $"so it blocks nothing and switching it off will not open a path. {cause}", this);
         }
 
         /*
@@ -611,7 +756,7 @@ namespace MiHordeTraffic.Pathing.FlowField
             _countdown -= deltaTime;
             _sinceRebuild += deltaTime;
 
-            float3 goal = target.position;
+            float3 goal = Plane.ToGrid(target.position);
 
             /*
              * Either the ceiling has come round, or the goal has moved far enough to be worth redrawing for and

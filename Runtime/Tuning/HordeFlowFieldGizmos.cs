@@ -55,7 +55,14 @@ namespace MiHordeTraffic.Tuning
             Transform target = driver.Target;
 
             HordeGridInfo grid = field.Grid;
-            float3 origin = target ? (float3)target.position : (float3)transform.position;
+            HordePlane plane = driver.Plane;
+            float3 origin = plane.ToGrid(target ? target.position : transform.position);
+
+            /*
+             * Everything below is drawn in grid space, the way it was written for XZ, and the matrix lays it on the XY
+             * plane in a 2D scene. Put back before the target is drawn, since that one is already a world position.
+             */
+            Gizmos.matrix = plane.GizmoMatrix;
             float rangeSquared = drawRange * drawRange;
             float half = grid.CellSize * .45f;
 
@@ -174,6 +181,8 @@ namespace MiHordeTraffic.Tuning
             Gizmos.DrawWireCube(
                 new Vector3(grid.Origin.x + grid.Width * grid.CellSize * .5f, grid.Origin.y, grid.Origin.z + grid.Height * grid.CellSize * .5f),
                 new Vector3(grid.Width * grid.CellSize, 0f, grid.Height * grid.CellSize));
+
+            Gizmos.matrix = Matrix4x4.identity;
 
             if (!target) return;
 

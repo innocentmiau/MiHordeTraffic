@@ -528,8 +528,22 @@ namespace MiHordeTraffic.Movement
             GridFlowField field = driver.Field;
             HordeGridInfo grid = field.Grid;
 
-            float3 position = transform.position;
+            /*
+             * Traced and drawn in grid space, with the matrix laying it on the XY plane in a 2D scene, so the route
+             * reads the same in both without a second copy of any of this.
+             */
+            float3 position = driver.Plane.ToGrid(transform.position);
             int cell = grid.IndexOf(position);
+
+            Gizmos.matrix = driver.Plane.GizmoMatrix;
+
+            DrawRoute(field, grid, position, cell);
+
+            Gizmos.matrix = Matrix4x4.identity;
+        }
+
+        private void DrawRoute(GridFlowField field, HordeGridInfo grid, float3 position, int cell)
+        {
 
             /*
              * The state of the cell underfoot comes first, because most stuck bodies are stuck for one of these
@@ -607,7 +621,7 @@ namespace MiHordeTraffic.Movement
              * enough rather than a judgement call.
              */
             Gizmos.color = Color.red;
-            Gizmos.DrawLine(origin, origin + push / math.max(speed, .01f) * 2f);
+            Gizmos.DrawLine(origin, origin + HordePlane.Active.ToGrid(push) / math.max(speed, .01f) * 2f);
         }
 
 

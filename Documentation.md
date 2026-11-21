@@ -206,3 +206,17 @@ rather than trusting a stopwatch.
 **Silent failures are the expensive ones.** Nearly every bug here presented as "the crowd stands still" or "the crowd shakes", with nothing logged. That is why there is a scene check that runs on play, an advisor that names which field to change, and why removed features are deleted rather than left in an enum that logs a warning.
 
 **Allocation and disposal want to be structurally paired.** A resize method leaked two arrays because a buffer was added to the allocating half and missed in the freeing half, twice. Rewriting it so every buffer goes through one of two helpers made the mistake unexpressible, which is a better fix than being careful.
+
+---
+
+## 11. 2D, and why it is not a second package
+
+The flow field, congestion, separation and jobs never depended on there being a third dimension. The grid was always two dimensional with height as a lookup, so a top down 2D level is the same problem: a floor with walls in it, drawn on XY instead of XZ.
+
+Two ways to get there were considered. Teaching every job which axes to read would have put a branch in each of the dozen places the move job reads the ground, which is the hottest code in the package and the easiest place to forget one. Forking a 2D package would have duplicated twelve thousand lines, and every congestion fix after that would have had to be made twice.
+
+What it does instead is convert at the edges. Everything inside works in grid space, where the ground is XZ, exactly as before. A 2D position goes in as `world.xzy` and comes back out the same way, because swapping two axes is its own inverse. `HordePlane` is that conversion, a blittable struct a job can carry, and the default is 3D so code that never heard of it behaves as it did. Gizmos draw in grid space through a swizzle matrix, so the drawing code was not touched either.
+
+The engine is only asked about the world in one place, the bake, and that question is now an interface. The navmesh source is the old bake moved as it was. The 2D source overlaps a box per cell against colliders on the blocking layers and, if floor tilemaps are given, requires a floor tile. The box is never the full cell, because a wall tile that ends on a cell boundary touches the next cell and an overlap test counts touching.
+
+Three things genuinely differ in 2D and are handled at the edge rather than inside: a body keeps its own depth instead of being snapped to the ground, since depth is sorting in 2D; separation's default `XZ` is read as the ground plane, since in 2D it would push along the camera axis; and facing is a choice, since a sprite drawn upright must not be rotated like a 3D model.
