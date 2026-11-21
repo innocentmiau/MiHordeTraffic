@@ -56,10 +56,11 @@ namespace MiHordeTraffic.Pathing.FlowField
          * failed a walkability test against cells that did not exist.
          */
         /*
-         * In 2D there is no navmesh to fit to, and the nearest thing to one is the floor tilemaps, or failing those the
-         * walls, since the walls of a top down level are what enclose it.
+         * A 2D scene on PHYSICS_2D has no navmesh to fit to, and the nearest thing to one is the floor tilemaps, or
+         * failing those the walls, since the walls of a top down level are what enclose it. On NAVMESH it fits to the
+         * NavMeshPlus navmesh exactly as 3D does.
          */
-        [Tooltip("Fit the grid to the level. 3D fits to the baked navmesh. 2D fits to the Floor Tilemaps, or to the colliders on the Blocking Layers when there are none. Off uses Bounds.")]
+        [Tooltip("Fit the grid to the level. 3D and 2D NAVMESH fit to the baked navmesh. 2D PHYSICS_2D fits to the Floor Tilemaps, or to the colliders on the Blocking Layers when there are none. Off uses Bounds.")]
         [FormerlySerializedAs("fitToNavMesh")]
         [SerializeField] private bool fitToLevel = true;
         [SerializeField, Min(0f)] private float fitMargin = 2f;
@@ -67,7 +68,7 @@ namespace MiHordeTraffic.Pathing.FlowField
         [SerializeField] private Bounds bounds = new Bounds(Vector3.zero, new Vector3(100f, 10f, 100f));
         [Tooltip("Metres across one grid cell. Smaller is more precise routing and quadratically more memory and rebuild time.")]
         [SerializeField, Min(.1f)] private float cellSize = 1f;
-        [Tooltip("Metres above and below a cell centre to look for the navmesh when baking.")]
+        [Tooltip("Metres above and below a cell centre to look for the navmesh when baking. In 2D NAVMESH this is distance in Z from the navmesh.")]
         [SerializeField, Min(.1f)] private float sampleHeight = 4f;
         /*
          * Zero by default now, because with Sample Accuracy at one it is asking for something the navmesh has
@@ -113,10 +114,13 @@ namespace MiHordeTraffic.Pathing.FlowField
          * bodies themselves are on, and a crowd standing on the map when it is baked would carve itself out of it.
          */
         [Header("2D")]
-        [Tooltip("WORLD_2D only. Layers whose 2D colliders are walls. Keep the bodies, triggers and runtime obstacles off these layers.")]
+        [Tooltip("WORLD_2D only. PHYSICS_2D reads walls from 2D colliders and needs no navmesh. NAVMESH reads a navmesh baked by NavMeshPlus on the XY plane.")]
+        [SerializeField] private HordeGround2D ground2D = HordeGround2D.PHYSICS_2D;
+
+        [Tooltip("WORLD_2D with PHYSICS_2D only. Layers whose 2D colliders are walls. Keep the bodies, triggers and runtime obstacles off these layers.")]
         [SerializeField] private LayerMask blockingLayers = 1;
 
-        [Tooltip("WORLD_2D only. When set, a cell is only ground where one of these tilemaps has a tile. Leave empty to treat the whole grid area as ground except where walls are.")]
+        [Tooltip("WORLD_2D with PHYSICS_2D only. When set, a cell is only ground where one of these tilemaps has a tile. Leave empty to treat the whole grid area as ground except where walls are.")]
         [SerializeField] private Tilemap[] floorTilemaps = new Tilemap[0];
 
         [Header("Field")]
@@ -221,6 +225,20 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// Whether this scene is 3D on XZ or top down 2D on XY.
         /// </summary>
         public HordeSpace Space => space;
+
+        /// <summary>
+        /// What a 2D scene's bake reads for ground. Ignored in 3D.
+        /// </summary>
+        public HordeGround2D Ground2D => ground2D;
+
+        /*
+         * The one question the scheduler and the scene check actually have about the level, asked in one place so the
+         * two cannot answer it differently. A 3D scene always walks a navmesh, and a 2D one does when NavMeshPlus baked it.
+         */
+        /// <summary>
+        /// Whether the ground comes from a baked navmesh, which is what a NavMeshAgent needs to walk on.
+        /// </summary>
+        public bool WalksNavMesh => space == HordeSpace.WORLD_3D || ground2D == HordeGround2D.NAVMESH;
 
         /// <summary>
         /// Layers whose 2D colliders the 2D bake treats as walls.
@@ -368,9 +386,9 @@ namespace MiHordeTraffic.Pathing.FlowField
          * New every bake, because each one is configured with whatever the inspector says at that moment and holds
          * nothing worth keeping between bakes.
          */
-        private IHordeWalkabilitySource CreateWalkabilitySource() => space == HordeSpace.WORLD_2D
-            ? new Physics2DWalkability(Plane, blockingLayers, floorTilemaps, sampleAccuracy)
-            : new NavMeshWalkability(Plane, sampleHeight, NavMesh.AllAreas, sampleAccuracy);
+        private IHordeWalkabilitySource CreateWalkabilitySource() => WalksNavMesh
+            ? new NavMeshWalkability(Plane, sampleHeight, NavMesh.AllAreas, sampleAccuracy)
+            : new Physics2DWalkability(Plane, blockingLayers, floorTilemaps, sampleAccuracy);
 
         /// <summary>
         /// Works out what area the grid should cover in world space, preferring the level's own extent.
@@ -378,9 +396,15 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <returns>The area to bake.</returns>
         private Bounds ResolveBounds()
         {
-            if (space == HordeSpace.WORLD_2D) return fitToLevel && TryFitTo2DLevel(out Bounds level) ? level : bounds;
+            if (!WalksNavMesh) return fitToLevel && TryFitTo2DLevel(out Bounds level) ? level : bounds;
 
             if (fitToLevel && TryFitToNavMesh(out Bounds fitted)) return fitted;
+
+            /*
+             * The surface field is Unity's own NavMeshSurface, and a NavMeshPlus scene has NavMeshPlus's surface instead,
+             * which is a different type this package does not reference. A 2D scene that is not fitting uses Bounds.
+             */
+            if (space == HordeSpace.WORLD_2D) return bounds;
 
             if (surface) return new Bounds(surface.transform.TransformPoint(surface.center), surface.size);
 
@@ -408,8 +432,14 @@ namespace MiHordeTraffic.Pathing.FlowField
             /*
              * Grown outwards so the cells along an edge have their centres over navmesh rather than just past it.
              * A body walking to the very edge otherwise finds the cell it is standing in marked unwalkable.
+             *
+             * Grown in grid space, because a NavMeshPlus navmesh lies on XY and the margin belongs on the ground axes
+             * whichever way the ground faces. Expanding the world box as if it were 3D thickened a flat 2D level in Y and
+             * Z, which is one ground axis too few and a depth axis the bake then searched for nothing.
              */
-            fitted.Expand(new Vector3(fitMargin * 2f, math.max(fitted.size.y, 4f), fitMargin * 2f));
+            Bounds grid = Plane.ToGrid(fitted);
+            grid.Expand(new Vector3(fitMargin * 2f, math.max(grid.size.y, 4f), fitMargin * 2f));
+            fitted = Plane.ToWorld(grid);
 
             return true;
         }
@@ -713,11 +743,14 @@ namespace MiHordeTraffic.Pathing.FlowField
              * The same mistake has a different cause in 2D. There is no navmesh to carve, but a collider on a blocking
              * layer is a wall as far as the bake is concerned, so an obstacle that is also on one was baked as wall.
              */
-            string cause = space == HordeSpace.WORLD_2D
+            string cause = !WalksNavMesh
                 ? "The usual cause is that its Collider2D is on one of the driver's Blocking Layers, so the bake already treated it as wall. "
                     + "Put runtime obstacles on a layer the driver does not block on and let this block them instead."
-                : "The usual cause is that it was present when the NavMesh was baked, which carved a hole under it. "
-                    + "Exclude it from the NavMesh bake and let this block it instead.";
+                : space == HordeSpace.WORLD_2D
+                    ? "The usual cause is that it has a NavMeshModifier set to Not Walkable, so NavMeshPlus carved a hole under it when baking. "
+                        + "Tick Ignore From Build on that modifier, rebake, and let this block it instead."
+                    : "The usual cause is that it was present when the NavMesh was baked, which carved a hole under it. "
+                        + "Exclude it from the NavMesh bake and let this block it instead.";
 
             Debug.LogWarning($"[MiHordeTraffic] A solid obstacle at {(Vector3)Plane.ToWorld(request.Area.center)} covers no ground the bake found walkable, "
                 + $"so it blocks nothing and switching it off will not open a path. {cause}", this);

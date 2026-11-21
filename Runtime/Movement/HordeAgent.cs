@@ -473,6 +473,17 @@ namespace MiHordeTraffic.Movement
 
             if (!agent) return;
 
+            /*
+             * A NavMeshPlus navmesh lies on XY, and an agent left to manage its own up axis stands itself up off it onto
+             * XZ, turning the sprite edge on to the camera so it vanishes. Rotation goes with it, because a sprite is
+             * not a model and turning it is the mover's Facing 2D question, not the agent's.
+             */
+            if (HordePlane.Active.Is2D)
+            {
+                agent.updateRotation = false;
+                agent.updateUpAxis = false;
+            }
+
             agent.enabled = true;
 
             if (disableBuiltInAvoidance) agent.DisableBuiltInAvoidance();

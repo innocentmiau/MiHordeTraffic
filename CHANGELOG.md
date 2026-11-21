@@ -7,19 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0]
 
+The 2D update. The same crowd, congestion routing, separation and obstacles now run in a top down 2D scene on the XY plane, with the ground read either from 2D colliders and tilemaps or from a NavMeshPlus navmesh.
+
 ### Added
 
 - **Top down 2D.** The driver has a **Space** setting, `WORLD_3D` or `WORLD_2D`, and in 2D the whole package runs on the XY plane: the field, congestion, separation, spawning, obstacles, targets and gizmos. Nothing about the routing was forked to get there. Everything inside still works with the ground on XZ, and a 2D scene is converted on the way in and on the way out by swapping Y and Z, which is its own inverse, so one swizzle goes both ways and the two halves cannot disagree. The move job, which reads the ground axes in a dozen places, gained two conversions and no branches in its hot path.
 
-- **A 2D walkability bake that needs no navmesh.** A cell is ground unless a `Collider2D` on the driver's **Blocking Layers** overlaps it. `TilemapCollider2D` and `CompositeCollider2D` are colliders like any other, so wall tilemaps work with nothing to set up. **Floor Tilemaps** are optional: with them a cell is only ground where some floor tilemap has a tile, which is what makes holes and irregular map edges come out right without walling them. Triggers are ignored, since in a 2D game they are pickups and sensors that a body walks into. **Sample Accuracy** means the same thing it does in 3D, how much of the cell has to be clear, and never tests the whole cell, because a wall tile ending exactly on a cell boundary touches the next cell and would take a row of open ground off every wall.
+- **Ground 2D, for where a 2D crowd can walk.** `PHYSICS_2D` needs no navmesh and is the default. `NAVMESH` reads a navmesh baked by NavMeshPlus, for projects that already have one and should not have to describe the same level twice.
 
-- **The grid fits itself to a 2D level.** **Fit To Level**, which was Fit To NavMesh and keeps its value, fits to the floor tilemaps in 2D, or to the colliders on the blocking layers when there are none. Tilemap bounds are compressed first, because a tilemap remembers the largest area it ever had tiles in.
+- **The `PHYSICS_2D` bake.** A cell is ground unless a `Collider2D` on the driver's **Blocking Layers** overlaps it. `TilemapCollider2D` and `CompositeCollider2D` are colliders like any other, so wall tilemaps work with nothing to set up. **Floor Tilemaps** are optional: with them a cell is only ground where some floor tilemap has a tile, which is what makes holes and irregular map edges come out right without walling them. Triggers are ignored, since in a 2D game they are pickups and sensors that a body walks into. **Sample Accuracy** means the same thing it does in 3D, how much of the cell has to be clear, and never tests the whole cell, because a wall tile ending exactly on a cell boundary touches the next cell and would take a row of open ground off every wall.
+
+- **The `NAVMESH` bake, for NavMeshPlus.** It samples the navmesh exactly as 3D does, converting each cell to the XY plane before asking. The package takes no dependency on NavMeshPlus: what it bakes is an ordinary Unity navmesh, read through Unity's own API, so projects without it never install it.
+
+- **The grid fits itself to a 2D level.** **Fit To Level**, which was Fit To NavMesh and keeps its value, fits to the NavMeshPlus navmesh on `NAVMESH`. On `PHYSICS_2D` it fits to the floor tilemaps, or to the colliders on the blocking layers when there are none. Tilemap bounds are compressed first, because a tilemap remembers the largest area it ever had tiles in.
+
+- **`NAVMESH_AGENT` in 2D.** On `NAVMESH` the scheduler's NavMeshAgent technique runs as it does in 3D, and bodies handed to their agents get `updateRotation` and `updateUpAxis` switched off, which NavMeshPlus agents need to stay on XY. On `PHYSICS_2D` there is no navmesh for an agent to stand on, so the scheduler falls back to `FLOW_FIELD` and says so.
 
 - **Facing 2D** on `HordeFlowMovement`, for what a sprite does with its heading. `NONE` is the default, because most top down sprites are animated per direction and rotating one drawn upright lays it on its side. `FLIP_X` mirrors the scale towards the side it walks, with a dead zone so a body walking straight up the screen does not flip every few frames. `ROTATE_FACING_RIGHT` and `ROTATE_FACING_UP` turn about Z at the existing Turn Speed.
 
-- **Tools > MiHordeTraffic > Set Up 2D Scene**, the same setup as the 3D one with the driver switched to 2D.
+- **Tools > MiHordeTraffic > Set Up 2D Scene** and **Set Up 2D Scene (NavMeshPlus)**, the same setup as the 3D one with the driver switched to 2D, the ground source set, and the scheduler on `FLOW_FIELD`.
 
-- **A Flow Field Crowd 2D sample**, a spawner that rings the target on XY and a target that follows the mouse while it is held, because what a flow field does when the goal moves is the part worth watching.
+- **A Flow Field Crowd 2D sample**, a spawner that rings the target on XY and a target that follows the mouse while it is held, because what a flow field does when the goal moves is the part worth watching. The spawner hands the driver's target to bodies with a `HordeEntity`, so the same prefab also runs under `NAVMESH_AGENT`.
 
 - **`IHordeWalkabilitySource`**, the one question the bake asks the engine, split out of `GridFlowField` so it can be asked of something other than a navmesh. `NavMeshWalkability` is the old bake moved as it was, and `Physics2DWalkability` is the new one.
 
@@ -31,19 +39,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **In 2D a body keeps its own depth.** The 3D mover snaps every body to the ground height, and doing that in 2D would flatten every body onto one Z and undo any ordering the game relied on. `HordeSpawn` keeps the depth it was asked for, for the same reason.
 
-- **The scene check knows about 2D.** It no longer demands a navmesh when the driver is 2D, and warns instead when there are no blocking layers and no floor tilemaps, or when the bodies' own colliders sit on a blocking layer, which bakes every body present at the time as a wall.
+- **`HordeEntity` does not turn to face the target in 2D.** Its settle turn is a 3D one and laid sprites edge on to the camera, so a settled crowd disappeared.
 
-- **The obstacle that blocks nothing says why in 2D.** The usual cause is different: there is no navmesh to carve, but an obstacle whose collider is on a blocking layer was already baked as wall.
+- **Fitting to a navmesh expands in grid space**, so a flat XY navmesh gets its margin on X and Y rather than on Z. Nothing changes in 3D.
+
+- **The scene check knows about 2D.** It no longer demands a navmesh on `PHYSICS_2D`, and warns instead when there are no blocking layers and no floor tilemaps, or when the bodies' own colliders sit on a blocking layer, which bakes every body present at the time as a wall. On `NAVMESH` it reports a missing navmesh, and a NavMeshPlus surface never rotated to XY, which bakes on XZ where no 2D cell is on it.
+
+- **The obstacle that blocks nothing says why for each ground source.** In 3D the navmesh carved a hole under it. On `PHYSICS_2D` its collider is on a blocking layer and was baked as wall. On `NAVMESH` it has a Not Walkable `NavMeshModifier` and NavMeshPlus carved it.
 
 ### Fixed
 
-- The Flow Field Crowd spawners (3D and 2D) now wait for the grid to bake before spawning on start. Before, they could run before the driver's Start and place nobody.
+- **The Flow Field Crowd spawners placed nobody on start, about half the time.** They could run before the driver's Start had baked the grid, and every placement was refused. Both the 3D and the 2D spawner now wait for the bake.
 
 ### Upgrading
 
 - **`GridFlowField.Bake` takes an `IHordeWalkabilitySource`** in place of the sample height, area mask and accuracy, and its bounds are in grid space. Only code that baked a field by hand is affected; the driver does this for you. `new NavMeshWalkability(HordePlane.For(HordeSpace.WORLD_3D), sampleHeight, NavMesh.AllAreas, sampleAccuracy)` reproduces the old behaviour.
 
 - **`HordeFlowFieldDriver.GoalArea` is in grid space.** In 3D that is the same thing as world space, so nothing changes unless you read it in a 2D scene.
+
+- **`HordeObstacle` and `HordeMovingObstacle` only block the flow field.** That was always so, and is now written down: under `NAVMESH_AGENT` agents path on the navmesh and walk through them, so give the object a carving `NavMeshObstacle` too if it must block agents.
 
 ## [0.7.1]
 

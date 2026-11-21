@@ -65,6 +65,17 @@ namespace MiHordeTraffic.Pathing.FlowField
         /// <returns>The same box with the ground on XZ.</returns>
         public Bounds ToGrid(Bounds world) => Is2D ? new Bounds((Vector3)ToGrid(world.center), (Vector3)ToGrid(world.size)) : world;
 
+        /*
+         * The swap is its own inverse, so this is ToGrid under another name. Named anyway, because a call that reads as
+         * converting into the grid when it is converting out of it is the kind of line that gets fixed into a bug.
+         */
+        /// <summary>
+        /// A grid space box in world space.
+        /// </summary>
+        /// <param name="grid">Box in grid space.</param>
+        /// <returns>The same box as it lies in the world.</returns>
+        public Bounds ToWorld(Bounds grid) => ToGrid(grid);
+
         /// <summary>
         /// The two ground axes of a world position or size, which are XZ in 3D and XY in 2D.
         /// </summary>

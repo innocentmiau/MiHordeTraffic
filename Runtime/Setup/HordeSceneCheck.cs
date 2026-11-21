@@ -70,10 +70,10 @@ namespace MiHordeTraffic.Setup
                     "HordeFlowFieldDriver has no target, so the field has nothing to expand from.",
                     "Assign whatever the crowd should walk towards to the driver's Target field."));
 
-            if (scheduler && scheduler.Technique == HordePathTechnique.NAVMESH_AGENT && driver && driver.Space == HordeSpace.WORLD_2D)
+            if (scheduler && scheduler.Technique == HordePathTechnique.NAVMESH_AGENT && driver && !driver.WalksNavMesh)
                 into.Add(new HordeSceneIssue(HordeIssueSeverity.WARNING,
-                    "The scheduler is set to NAVMESH_AGENT in a 2D scene, where there is no navmesh for agents to use. It will run FLOW_FIELD instead.",
-                    "Set the scheduler's Technique to FLOW_FIELD."));
+                    "The scheduler is set to NAVMESH_AGENT in a 2D scene on PHYSICS_2D, where there is no navmesh for agents to use. It will run FLOW_FIELD instead.",
+                    "Set the scheduler's Technique to FLOW_FIELD, or set the driver's Ground 2D to NAVMESH if the scene has a NavMeshPlus navmesh."));
             else if (scheduler && scheduler.Technique == HordePathTechnique.NAVMESH_AGENT)
                 into.Add(new HordeSceneIssue(HordeIssueSeverity.ADVICE,
                     "The scheduler is set to NAVMESH_AGENT, which hands every body back to its own NavMeshAgent.",
@@ -83,16 +83,14 @@ namespace MiHordeTraffic.Setup
              * Checked last because it is the one that needs the scene to have been baked rather than merely
              * populated, and a scene that is missing components is not yet worth telling about its navmesh.
              */
-            if (driver && driver.Space == HordeSpace.WORLD_2D)
-            {
+            if (driver && !driver.WalksNavMesh)
                 Inspect2D(driver, into);
-            }
+            else if (driver && driver.Space == HordeSpace.WORLD_2D)
+                InspectNavMeshPlus(into);
             else if (NavMesh.CalculateTriangulation().vertices.Length == 0)
-            {
                 into.Add(new HordeSceneIssue(HordeIssueSeverity.BLOCKING,
                     "There is no navmesh in the scene, so the grid bake will find no walkable ground at all.",
                     "Bake a NavMeshSurface before pressing play, or set the driver's Space to WORLD_2D for a 2D scene."));
-            }
 
             into.Sort((a, b) => a.Severity.CompareTo(b.Severity));
         }
@@ -119,6 +117,37 @@ namespace MiHordeTraffic.Setup
                     "Put the bodies on a layer that is not in the driver's Blocking Layers."));
                 break;
             }
+        }
+
+        /*
+         * A 2D scene that reads a navmesh can be missing it the same way a 3D one can, and has one more way of getting it
+         * wrong: a NavMeshPlus surface that was never rotated bakes on XZ, flat under a camera that looks along Z. The
+         * bake then finds every cell of an XY grid off the navmesh, and the crowd stands still with no error.
+         *
+         * Told apart by which way the navmesh is thin. A level baked on XY has no depth in Z, one baked on XZ has none in Y.
+         */
+        private static void InspectNavMeshPlus(List<HordeSceneIssue> into)
+        {
+            Vector3[] vertices = NavMesh.CalculateTriangulation().vertices;
+
+            if (vertices.Length == 0)
+            {
+                into.Add(new HordeSceneIssue(HordeIssueSeverity.BLOCKING,
+                    "The 2D driver's Ground 2D is NAVMESH but there is no navmesh in the scene, so the grid bake will find no walkable ground at all.",
+                    "Bake the NavMeshPlus NavMeshSurface before pressing play, or set Ground 2D to PHYSICS_2D to bake from colliders instead."));
+                return;
+            }
+
+            Bounds extent = new Bounds(vertices[0], Vector3.zero);
+
+            for (int i = 1; i < vertices.Length; i++)
+                extent.Encapsulate(vertices[i]);
+
+            if (extent.size.z <= extent.size.y) return;
+
+            into.Add(new HordeSceneIssue(HordeIssueSeverity.BLOCKING,
+                "The navmesh lies on XZ, but a 2D driver reads it on XY, so the grid bake will find no walkable ground on it.",
+                "Press Rotate Surface to XY on the NavMeshPlus NavMeshSurface (its object should be rotated -90, 0, 0) and bake it again."));
         }
 
         /*

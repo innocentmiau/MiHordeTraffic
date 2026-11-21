@@ -1,4 +1,5 @@
 using System.Collections;
+using MiHordeTraffic.Movement;
 using MiHordeTraffic.Pathing.FlowField;
 using MiHordeTraffic.Spawning;
 using UnityEngine;
@@ -89,7 +90,16 @@ namespace MiHordeTraffic.Samples.FlowFieldCrowd2D
             {
                 if (!HordeSpawn.TryFind(RingPoint(), searchRadius, out Vector3 spawn)) continue;
 
-                Instantiate(bodyPrefab, spawn, Quaternion.identity);
+                GameObject spawned = Instantiate(bodyPrefab, spawn, Quaternion.identity);
+
+                /*
+                 * Bodies on the flow field follow the driver's target and need nothing here. A body with a HordeEntity
+                 * paths with its own NavMeshAgent when the scheduler runs NAVMESH_AGENT, and that path needs a target.
+                 */
+                HordeFlowFieldDriver driver = HordeFlowFieldDriver.Instance;
+
+                if (driver && spawned.TryGetComponent(out IHordeTargetable targetable)) targetable.SetTarget(driver.Target);
+
                 return true;
             }
 

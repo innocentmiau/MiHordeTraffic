@@ -36,16 +36,23 @@ namespace MiHordeTraffic.EditorTools
         private static readonly List<HordeSceneIssue> ISSUES = new List<HordeSceneIssue>();
 
         [MenuItem("Tools/MiHordeTraffic/Set Up Scene")]
-        private static void SetUpScene() => SetUp(HordeSpace.WORLD_3D);
+        private static void SetUpScene() => SetUp(HordeSpace.WORLD_3D, HordeGround2D.PHYSICS_2D);
 
         /*
          * The same components as a 3D scene, with the driver switched to 2D. Separation needs nothing, because it reads
          * the driver and turns its default XZ into XY on its own, and the mover keeps sprites unrotated by default.
          */
         [MenuItem("Tools/MiHordeTraffic/Set Up 2D Scene")]
-        private static void SetUp2DScene() => SetUp(HordeSpace.WORLD_2D);
+        private static void SetUp2DScene() => SetUp(HordeSpace.WORLD_2D, HordeGround2D.PHYSICS_2D);
 
-        private static void SetUp(HordeSpace space)
+        /*
+         * The NavMeshPlus scene is the same 2D scene reading a different ground. The navmesh itself is not made here,
+         * because a project arriving with NavMeshPlus already has its surface set up the way its agents need it.
+         */
+        [MenuItem("Tools/MiHordeTraffic/Set Up 2D Scene (NavMeshPlus)")]
+        private static void SetUp2DNavMeshScene() => SetUp(HordeSpace.WORLD_2D, HordeGround2D.NAVMESH);
+
+        private static void SetUp(HordeSpace space, HordeGround2D ground2D)
         {
             SeparationSystem separation = Object.FindFirstObjectByType<SeparationSystem>();
             GameObject host = separation ? separation.gameObject : CreateHost();
@@ -65,6 +72,7 @@ namespace MiHordeTraffic.EditorTools
             Wire(movement, "driver", driver);
             Wire(gizmos, "driver", driver);
             SetSpace(driver, space);
+            SetEnum(driver, "ground2D", (int)ground2D);
 
             /*
              * The scheduler's own default is the NavMeshAgent baseline, which a 2D scene cannot run, so the 2D setup

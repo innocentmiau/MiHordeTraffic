@@ -29,7 +29,7 @@ Video: https://www.youtube.com/watch?v=vscjLy909bU
 - **Runtime obstacles and gates.** Buildings block ground without re-baking; gates hold a queue until they open.
 - **Shaped targets.** A box or sphere goal, so a crowd surrounds a building instead of queueing at one corner.
 - **Terrain height.** Hills cost more than flat ground; ledges can be refused.
-- **Top down 2D.** The same crowd on the XY plane, with walls read from 2D colliders and tilemaps. No navmesh needed.
+- **Top down 2D.** The same crowd on the XY plane, with walls read from 2D colliders and tilemaps, so no navmesh is needed. Or read from a NavMeshPlus navmesh, if your project already bakes one.
 - **Freeze and resume.** A frozen body costs nothing and still occupies its ground.
 - **Runtime technique switching**, so you can measure this against stock `NavMeshAgent` on the same crowd.
 - **Presets** for everything where "is 5 a lot?" has no answer, plus a scene setup tool and a live advisor.
@@ -70,6 +70,16 @@ For a top down 2D game on the XY plane. No navmesh is involved: walls come from 
 5. Put **`HordeAgent`** on a sprite prefab. Keep it, and any trigger or runtime obstacle, **off** the blocking layers, or it is baked as a wall.
 
 The **Flow Field Crowd 2D** sample has a spawner and a target that follows the mouse.
+
+#### 2D with NavMeshPlus
+
+If the project already bakes a [NavMeshPlus](https://github.com/h8man/NavMeshPlus) navmesh, the grid can read that instead of colliders, so the level is not described twice. This package does not depend on NavMeshPlus. What NavMeshPlus bakes is an ordinary Unity navmesh lying on XY, and it is read through Unity's own navmesh API.
+
+1. **Tools > MiHordeTraffic > Set Up 2D Scene (NavMeshPlus)**, or set the driver's **Ground 2D** to `NAVMESH` on an existing 2D scene.
+2. Bake the NavMeshPlus **Navigation Surface** as usual. Its object must be rotated to XY (**Rotate Surface to XY** on Navigation CollectSources2d); the scene check says so if it is not.
+3. Runtime obstacles must not carve the bake. Leave them without a `NavMeshModifier`, or tick **Ignore From Build** on it, and let `HordeObstacle` block them.
+
+Blocking Layers and Floor Tilemaps are not read in this mode. The scheduler's `NAVMESH_AGENT` technique also works here: bodies' agents get `updateRotation` and `updateUpAxis` switched off, as NavMeshPlus needs.
 
 Separation set to `XZ` (the default) is read as the ground plane, so it separates on XY in a 2D scene without changing anything. **Facing 2D** on the mover decides what a sprite does with its heading: `NONE` (the default, for sprites animated per direction), `FLIP_X`, or rotating about Z.
 
@@ -132,6 +142,8 @@ Put **`HordeObstacle`** on a building. It takes the ground under it out of the g
 Two speeds of effect: bodies stop walking into it **immediately**, and route around it on the **next expansion** (up to `rebuildInterval`).
 
 **`HordeMovingObstacle`** is a separate component for things that move. It rechecks a few times a second and, by default, asks for no expansion at all. Bodies still cannot enter it, they are just not steered around it. Turn **Update Routing** on for something large enough that sliding along it will not get a body past.
+
+Both edit the flow field, not the navmesh. Under the scheduler's `NAVMESH_AGENT` technique each body paths on the navmesh with its own agent and never reads the field, so it walks straight through them. Give the object a carving `NavMeshObstacle` as well if it has to block agents too.
 
 ### Gates
 
@@ -287,7 +299,6 @@ Markers are stripped from non development builds, and the report says so rather 
 ## Roadmap
 
 - Layered grid, for surfaces above each other
-- NavMeshPlus navmeshes as a 2D walkability source
 - Multiple goals, one field each, sharing the grid
 - Walk to the nearest reachable point when the goal is cut off
 - Incremental expansion instead of full rebuilds

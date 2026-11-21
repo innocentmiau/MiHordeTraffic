@@ -1,5 +1,6 @@
 using System.Collections;
 using MiHordeTraffic.Pathing;
+using MiHordeTraffic.Pathing.FlowField;
 using UnityEngine;
 using UnityEngine.AI;
 
@@ -403,6 +404,13 @@ namespace MiHordeTraffic.Movement
              * facing the right way costs nothing at all.
              */
             if (!faceTargetWhenSettled || !_settled || !_target) return;
+
+            /*
+             * The turn below is a 3D one, levelled on Y and aimed with LookRotation, and on a 2D sprite it lays the body
+             * on its side, edge on to the camera, so a settled crowd vanished. A sprite's facing is a choice the game
+             * makes, so in 2D an entity that settles is left as it is.
+             */
+            if (HordePlane.Active.Is2D) return;
 
             _facingTarget = _target.position;
             _facing = true;
