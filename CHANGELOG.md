@@ -5,6 +5,12 @@ All notable changes to this package are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1]
+
+### Fixed
+
+- **The check on play reported errors in scenes that have no horde at all.** It ran on every scene, so any scene in a project with this package installed opened with errors about a missing driver, mover and separation system. It now only runs when the scene has at least one MiHordeTraffic component. **Tools > MiHordeTraffic > Check Scene** still reports on any scene.
+
 ## [0.8.0]
 
 The 2D update. The same crowd, congestion routing, separation and obstacles now run in a top down 2D scene on the XY plane, with the ground read either from 2D colliders and tilemaps or from a NavMeshPlus navmesh.

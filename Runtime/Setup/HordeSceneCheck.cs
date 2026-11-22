@@ -151,12 +151,28 @@ namespace MiHordeTraffic.Setup
         }
 
         /*
+         * The check on play is for scenes that are trying to be a horde scene and got part of it wrong. A scene with
+         * none of these in it is not one, and telling it that it is missing a driver, a mover and a separation system
+         * filled the console of every unrelated scene in a project that happened to have this package installed.
+         * Check Scene from the menu still reports on any scene, since running it is asking.
+         */
+        private static bool UsesHorde() =>
+            Object.FindAnyObjectByType<SeparationSystem>()
+            || Object.FindAnyObjectByType<HordeFlowFieldDriver>()
+            || Object.FindAnyObjectByType<HordeFlowMovement>()
+            || Object.FindAnyObjectByType<HordePathScheduler>()
+            || Object.FindAnyObjectByType<HordeAgent>()
+            || Object.FindAnyObjectByType<HordeEntity>();
+
+        /*
          * Runs after the first scene's Awakes, which is the earliest point at which a missing component is a real
          * absence rather than a script execution order accident.
          */
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void WarnOnPlay()
         {
+            if (!UsesHorde()) return;
+
             Inspect(ISSUES);
 
             for (int i = 0; i < ISSUES.Count; i++)
